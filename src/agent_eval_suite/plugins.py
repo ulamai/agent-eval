@@ -13,6 +13,12 @@ BUILTIN_JUDGES: dict[str, str] = {
     "json_schema": "agent_eval_suite.judges.json_schema:JSONSchemaJudge",
     "trajectory_step": "agent_eval_suite.judges.trajectory_step:TrajectoryStepJudge",
     "repair_path": "agent_eval_suite.judges.repair_path:RepairPathJudge",
+    "cost_budget": "agent_eval_suite.judges.cost_budget:CostBudgetJudge",
+    "latency_slo": "agent_eval_suite.judges.latency_slo:LatencySLOJudge",
+    "retry_storm": "agent_eval_suite.judges.retry_storm:RetryStormJudge",
+    "loop_guard": "agent_eval_suite.judges.loop_guard:LoopGuardJudge",
+    "tool_abuse": "agent_eval_suite.judges.tool_abuse:ToolAbuseJudge",
+    "prompt_injection": "agent_eval_suite.judges.prompt_injection:PromptInjectionJudge",
     "lean": "agent_eval_suite.judges.lean:LeanJudge",
 }
 

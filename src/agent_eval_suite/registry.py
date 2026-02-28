@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,15 @@ DEFAULT_REGISTRY_PATH = ".agent_eval/registry.json"
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _ensure_parent(path: Path) -> None:
@@ -43,20 +53,51 @@ def _checksum(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _append_audit(registry: dict[str, Any], action: str, details: dict[str, Any]) -> None:
+    log = registry.get("audit_log")
+    if not isinstance(log, list):
+        log = []
+    log.append({"at": _utc_now(), "action": action, "details": details})
+    registry["audit_log"] = log[-500:]
+
+
 def _normalize_registry(payload: dict[str, Any]) -> dict[str, Any]:
     datasets = payload.get("datasets", {})
     baselines = payload.get("baselines", {})
+    waivers = payload.get("waivers", [])
+    approvals = payload.get("approvals", {})
+    audit_log = payload.get("audit_log", [])
     if not isinstance(datasets, dict):
         datasets = {}
     if not isinstance(baselines, dict):
         baselines = {}
-    return {"version": "0.1.0", "datasets": datasets, "baselines": baselines}
+    if not isinstance(waivers, list):
+        waivers = []
+    if not isinstance(approvals, dict):
+        approvals = {}
+    if not isinstance(audit_log, list):
+        audit_log = []
+    return {
+        "version": "0.2.0",
+        "datasets": datasets,
+        "baselines": baselines,
+        "waivers": waivers,
+        "approvals": approvals,
+        "audit_log": audit_log,
+    }
 
 
 def load_registry(path: str | Path = DEFAULT_REGISTRY_PATH) -> dict[str, Any]:
     registry_path = Path(path)
     if not registry_path.exists():
-        return {"version": "0.1.0", "datasets": {}, "baselines": {}}
+        return {
+            "version": "0.2.0",
+            "datasets": {},
+            "baselines": {},
+            "waivers": [],
+            "approvals": {},
+            "audit_log": [],
+        }
     return _normalize_registry(_load_json(registry_path))
 
 
@@ -91,6 +132,11 @@ def register_dataset(
         "checksum_sha256": _checksum(suite_file),
     }
     registry["datasets"][resolved_dataset_id] = entry
+    _append_audit(
+        registry,
+        "dataset.register",
+        {"dataset_id": resolved_dataset_id, "suite_path": entry["suite_path"]},
+    )
     save_registry(registry, path)
     return entry
 
@@ -137,8 +183,184 @@ def set_baseline(
 
     registry = load_registry(path)
     registry["baselines"][name] = entry
+    _append_audit(
+        registry,
+        "baseline.set",
+        {
+            "name": name,
+            "run_id": entry.get("run_id"),
+            "dataset_id": entry.get("dataset_id"),
+        },
+    )
     save_registry(registry, path)
     return entry
+
+
+def promote_baseline(
+    *,
+    name: str,
+    run_path: str | Path,
+    approved_by: str,
+    rationale: str,
+    dataset_id: str | None = None,
+    notes: str | None = None,
+    path: str | Path = DEFAULT_REGISTRY_PATH,
+) -> dict[str, Any]:
+    baseline = set_baseline(
+        name=name,
+        run_path=run_path,
+        dataset_id=dataset_id,
+        notes=notes,
+        path=path,
+    )
+
+    registry = load_registry(path)
+    approvals = registry.get("approvals")
+    if not isinstance(approvals, dict):
+        approvals = {}
+    rows = approvals.get(name)
+    if not isinstance(rows, list):
+        rows = []
+
+    approval = {
+        "approval_id": str(uuid.uuid4()),
+        "name": name,
+        "run_id": baseline.get("run_id"),
+        "approved_by": approved_by,
+        "rationale": rationale,
+        "approved_at": _utc_now(),
+    }
+    rows.append(approval)
+    approvals[name] = rows[-100:]
+    registry["approvals"] = approvals
+    _append_audit(
+        registry,
+        "baseline.promote",
+        {
+            "name": name,
+            "run_id": baseline.get("run_id"),
+            "approved_by": approved_by,
+        },
+    )
+    save_registry(registry, path)
+    return {"baseline": baseline, "approval": approval}
+
+
+def list_approvals(
+    name: str | None = None, path: str | Path = DEFAULT_REGISTRY_PATH
+) -> list[dict[str, Any]]:
+    registry = load_registry(path)
+    approvals = registry.get("approvals", {})
+    if not isinstance(approvals, dict):
+        return []
+
+    rows: list[dict[str, Any]] = []
+    names = [name] if name else sorted(approvals.keys())
+    for baseline_name in names:
+        values = approvals.get(baseline_name)
+        if not isinstance(values, list):
+            continue
+        for row in values:
+            if isinstance(row, dict):
+                rows.append(row)
+    rows.sort(key=lambda row: str(row.get("approved_at", "")), reverse=True)
+    return rows
+
+
+def add_waiver(
+    *,
+    baseline_name: str,
+    reason: str,
+    approved_by: str,
+    case_id: str | None = None,
+    judge_id: str | None = None,
+    regression_key: str | None = None,
+    expires_at: str | None = None,
+    path: str | Path = DEFAULT_REGISTRY_PATH,
+) -> dict[str, Any]:
+    waiver = {
+        "waiver_id": str(uuid.uuid4()),
+        "baseline_name": baseline_name,
+        "case_id": case_id,
+        "judge_id": judge_id,
+        "regression_key": regression_key,
+        "reason": reason,
+        "approved_by": approved_by,
+        "created_at": _utc_now(),
+        "expires_at": expires_at,
+    }
+
+    registry = load_registry(path)
+    waivers = registry.get("waivers")
+    if not isinstance(waivers, list):
+        waivers = []
+    waivers.append(waiver)
+    registry["waivers"] = waivers[-2000:]
+    _append_audit(
+        registry,
+        "waiver.add",
+        {
+            "waiver_id": waiver["waiver_id"],
+            "baseline_name": baseline_name,
+            "case_id": case_id,
+            "judge_id": judge_id,
+            "expires_at": expires_at,
+        },
+    )
+    save_registry(registry, path)
+    return waiver
+
+
+def list_waivers(
+    *,
+    baseline_name: str | None = None,
+    active_only: bool = False,
+    as_of: str | None = None,
+    path: str | Path = DEFAULT_REGISTRY_PATH,
+) -> list[dict[str, Any]]:
+    registry = load_registry(path)
+    waivers = registry.get("waivers", [])
+    if not isinstance(waivers, list):
+        return []
+
+    now = _parse_iso(as_of) if as_of else datetime.now(UTC)
+    rows: list[dict[str, Any]] = []
+    for item in waivers:
+        if not isinstance(item, dict):
+            continue
+        if baseline_name and item.get("baseline_name") != baseline_name:
+            continue
+        expiry = _parse_iso(item.get("expires_at"))
+        is_active = expiry is None or expiry > now
+        row = dict(item)
+        row["active"] = is_active
+        if active_only and not is_active:
+            continue
+        rows.append(row)
+    rows.sort(key=lambda row: str(row.get("created_at", "")), reverse=True)
+    return rows
+
+
+def get_active_waivers_for_baseline(
+    baseline_name: str, path: str | Path = DEFAULT_REGISTRY_PATH
+) -> list[dict[str, Any]]:
+    return list_waivers(
+        baseline_name=baseline_name,
+        active_only=True,
+        path=path,
+    )
+
+
+def list_audit_log(
+    path: str | Path = DEFAULT_REGISTRY_PATH, limit: int = 100
+) -> list[dict[str, Any]]:
+    registry = load_registry(path)
+    rows = registry.get("audit_log", [])
+    if not isinstance(rows, list):
+        return []
+    result = [row for row in rows if isinstance(row, dict)]
+    result.sort(key=lambda row: str(row.get("at", "")), reverse=True)
+    return result[: max(1, limit)]
 
 
 def get_baseline(name: str, path: str | Path = DEFAULT_REGISTRY_PATH) -> dict[str, Any] | None:

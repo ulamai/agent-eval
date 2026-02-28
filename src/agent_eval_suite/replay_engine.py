@@ -180,6 +180,7 @@ def replay_execute_run(
         repair_command=repair_command if isinstance(repair_command, str) else None,
         max_repairs=max_repairs,
         timeout_seconds=timeout_seconds,
+        strict_side_effects=bool(execution_config.get("strict_side_effects", False)),
     )
 
     replayed_suite = loop_runner.run(saved_suite)

@@ -53,6 +53,8 @@ class CompareTest(unittest.TestCase):
 
             report = compare_runs(baseline_dir, candidate_dir)
             self.assertIn("case_regressions", report)
+            self.assertIn("release_impact", report)
+            self.assertIn("triage", report)
             self.assertEqual(1, len(report["case_regressions"]))
             case = report["case_regressions"][0]
             self.assertEqual("case-1", case["case_id"])

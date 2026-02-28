@@ -106,6 +106,39 @@ def _render_case_lists(compare_report: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _render_release_impact(compare_report: dict[str, Any]) -> list[str]:
+    impact = compare_report.get("release_impact", {})
+    lines = ["## Release Impact", ""]
+    if not isinstance(impact, dict) or not impact:
+        lines.append("- Release impact summary not available.")
+        lines.append("")
+        return lines
+    lines.append(f"- Impact score: {impact.get('impact_score', 'n/a')}")
+    lines.append(f"- Impact level: `{impact.get('impact_level', 'n/a')}`")
+    lines.append(f"- Recommendation: `{impact.get('recommendation', 'n/a')}`")
+    lines.append("")
+    return lines
+
+
+def _render_triage(compare_report: dict[str, Any]) -> list[str]:
+    clusters = compare_report.get("triage", {}).get("top_clusters", [])
+    lines = ["## Triage Fix Hints", ""]
+    if not isinstance(clusters, list) or not clusters:
+        lines.append("- No triage clusters available.")
+        lines.append("")
+        return lines
+    for row in clusters[:10]:
+        lines.append(
+            "- `{cluster}` (delta +{delta}): {hint}".format(
+                cluster=row.get("cluster", "unknown"),
+                delta=int(row.get("delta", 0)),
+                hint=row.get("suggested_fix", "Investigate root cause."),
+            )
+        )
+    lines.append("")
+    return lines
+
+
 def _render_gate(gate_report: dict[str, Any] | None) -> list[str]:
     lines = ["## Gate Decision", ""]
     if gate_report is None:
@@ -179,6 +212,8 @@ def generate_markdown_report(
     lines.extend(_render_top_regressions(compare_report))
     lines.extend(_render_failure_clusters(compare_report))
     lines.extend(_render_case_lists(compare_report))
+    lines.extend(_render_release_impact(compare_report))
+    lines.extend(_render_triage(compare_report))
     lines.extend(_render_gate(gate_report))
     lines.extend(_render_replay(replay_report))
 

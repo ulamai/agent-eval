@@ -1,0 +1,8 @@
+{
+  "events": [
+    {"type": "message", "role": "user", "content": "ping"},
+    {"type": "tool_call", "name": "health_check", "arguments": {"service": "api"}},
+    {"type": "tool_result", "name": "health_check", "output": {"ok": true}},
+    {"type": "message", "role": "assistant", "content": "pong"}
+  ]
+}

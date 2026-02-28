@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
+from agent_eval_suite.provenance import apply_manifest_hashes, write_attestation
 from agent_eval_suite.schema import CaseResult, EvalSuite, RunConfig, RunSummary, utc_now_iso
 
 
@@ -96,4 +98,8 @@ def write_evidence_pack(
         },
     }
     write_json(base / "manifest.json", manifest)
+    apply_manifest_hashes(base)
+    attestation_secret = os.environ.get("AGENT_EVAL_ATTESTATION_SECRET")
+    if attestation_secret:
+        write_attestation(base, secret=attestation_secret, signer="env:hmac")
     return base

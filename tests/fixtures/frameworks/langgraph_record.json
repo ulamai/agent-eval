@@ -1,0 +1,8 @@
+{
+  "events": [
+    {"event": "message", "role": "user", "content": "weather in sf"},
+    {"event": "on_tool_start", "tool": "search_weather", "input": {"city": "San Francisco"}},
+    {"event": "on_tool_end", "tool": "search_weather", "output": {"temp_f": 72}},
+    {"event": "message", "role": "assistant", "content": "It is 72F"}
+  ]
+}

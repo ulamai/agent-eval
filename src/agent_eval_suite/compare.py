@@ -141,6 +141,83 @@ def _risk_level(pass_rate_delta: float, hard_fail_delta: float, regressed_cases:
     return "low"
 
 
+def _suggest_fix_hint(cluster: str) -> str:
+    judge_id = cluster.split(":", 1)[0]
+    hints = {
+        "tool_contract": "Align tool arguments to contract requirements and remove forbidden args.",
+        "policy": "Update agent planning to satisfy required tools and avoid forbidden tools.",
+        "trajectory_step": "Ensure every tool_call has an ordered matching tool_result.",
+        "regex": "Adjust output format or regex expectations to restore deterministic matching.",
+        "json_schema": "Return schema-valid JSON with required keys and valid enum values.",
+        "replay_contract": "Fix trace indexing/span structure and required event fields for replay.",
+        "latency_slo": "Reduce slow tool operations, add caching, and tighten timeout strategy.",
+        "cost_budget": "Reduce token/tool usage or adjust model/tool strategy for lower cost.",
+        "retry_storm": "Add retry caps, backoff limits, and early failure handling.",
+        "loop_guard": "Cap attempts/steps and add completion criteria to stop loops.",
+        "tool_abuse": "Constrain tool routing and tighten tool allow-lists/pattern guards.",
+        "prompt_injection": "Harden prompt/tool sanitization and refuse instruction overrides.",
+    }
+    return hints.get(judge_id, "Investigate this cluster and add a deterministic guard for recurrence.")
+
+
+def _build_triage_clusters(cluster_deltas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in cluster_deltas:
+        if int(row.get("delta", 0)) <= 0:
+            continue
+        cluster = str(row.get("cluster", "unknown:failed"))
+        if ":" in cluster:
+            judge_id, reason = cluster.split(":", 1)
+        else:
+            judge_id, reason = cluster, "failed"
+        rows.append(
+            {
+                "cluster": cluster,
+                "judge_id": judge_id,
+                "reason": reason,
+                "baseline_count": int(row.get("baseline_count", 0)),
+                "candidate_count": int(row.get("candidate_count", 0)),
+                "delta": int(row.get("delta", 0)),
+                "suggested_fix": _suggest_fix_hint(cluster),
+            }
+        )
+    rows.sort(key=lambda item: item["delta"], reverse=True)
+    return rows[:15]
+
+
+def _release_impact_summary(
+    pass_rate_delta: float,
+    hard_fail_delta: float,
+    regressed_case_count: int,
+    new_hard_fail_count: int,
+) -> dict[str, Any]:
+    score = 0.0
+    score += max(0.0, -pass_rate_delta) * 120.0
+    score += max(0.0, hard_fail_delta) * 150.0
+    score += float(regressed_case_count) * 2.5
+    score += float(new_hard_fail_count) * 5.0
+    score = min(100.0, round(score, 2))
+
+    if score >= 60:
+        level = "critical"
+        recommendation = "block"
+    elif score >= 30:
+        level = "high"
+        recommendation = "block_or_explicit_waiver"
+    elif score >= 12:
+        level = "medium"
+        recommendation = "review_before_release"
+    else:
+        level = "low"
+        recommendation = "proceed"
+
+    return {
+        "impact_score": score,
+        "impact_level": level,
+        "recommendation": recommendation,
+    }
+
+
 def _build_compatibility_report(
     baseline: dict[str, Any],
     candidate: dict[str, Any],
@@ -333,6 +410,13 @@ def compare_runs(
     pass_rate_delta = float(metrics["pass_rate"]["delta"])
     hard_fail_delta = float(metrics["hard_fail_rate"]["delta"])
     risk_level = _risk_level(pass_rate_delta, hard_fail_delta, len(regressed_cases))
+    triage_clusters = _build_triage_clusters(cluster_deltas)
+    release_impact = _release_impact_summary(
+        pass_rate_delta=pass_rate_delta,
+        hard_fail_delta=hard_fail_delta,
+        regressed_case_count=len(regressed_cases),
+        new_hard_fail_count=len(new_hard_fail_cases),
+    )
     compatibility = _build_compatibility_report(
         baseline=baseline,
         candidate=candidate,
@@ -371,6 +455,11 @@ def compare_runs(
             "candidate": candidate_clusters,
             "delta_ranked": cluster_deltas[:25],
         },
+        "triage": {
+            "top_clusters": triage_clusters,
+            "suggested_fixes_count": len(triage_clusters),
+        },
+        "release_impact": release_impact,
     }
 
 

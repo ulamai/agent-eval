@@ -9,19 +9,32 @@ from typing import Any
 
 from agent_eval_suite.artifacts import write_evidence_pack, write_json
 from agent_eval_suite.adapter_conformance import run_adapter_conformance
+from agent_eval_suite.benchmarks import ARCHETYPES, write_benchmark_suite
 from agent_eval_suite.compare import compare_runs, write_compare_report
 from agent_eval_suite.contracts import run_contract_checks
 from agent_eval_suite.environment import capture_environment_metadata
 from agent_eval_suite.gate import GateThresholds, evaluate_gate, write_gate_decision
+from agent_eval_suite.framework_importers import FRAMEWORKS, import_framework_to_suite
 from agent_eval_suite.importers import PROVIDERS, import_to_suite
 from agent_eval_suite.loop_runner import ProposeExecuteRepairRunner
 from agent_eval_suite.otel_export import export_run_to_otel
 from agent_eval_suite.plugins import DEFAULT_JUDGES, instantiate_judge
+from agent_eval_suite.provenance import (
+    apply_manifest_hashes,
+    verify_attestation,
+    write_attestation,
+)
 from agent_eval_suite.registry import (
     DEFAULT_REGISTRY_PATH,
+    add_waiver,
     get_baseline,
+    get_active_waivers_for_baseline,
     list_baselines,
     list_datasets,
+    list_audit_log,
+    list_approvals,
+    list_waivers,
+    promote_baseline,
     register_dataset,
     resolve_baseline_reference,
     set_baseline,
@@ -35,6 +48,7 @@ from agent_eval_suite.schema_governance import (
     migrate_suite_file,
     validate_suite_file,
 )
+from agent_eval_suite.stability import StabilityOptions, run_stability_check
 from agent_eval_suite.schema import EvalSuite, RunConfig, utc_now_iso
 
 
@@ -129,6 +143,7 @@ def cmd_run_loop(args: argparse.Namespace) -> int:
         repair_command=args.repair_command,
         max_repairs=args.max_repairs,
         timeout_seconds=args.command_timeout_seconds,
+        strict_side_effects=args.strict_side_effects,
     )
     generated_suite = loop_runner.run(suite)
     run_config = _build_run_config(
@@ -143,6 +158,7 @@ def cmd_run_loop(args: argparse.Namespace) -> int:
         "repair_command": args.repair_command,
         "max_repairs": args.max_repairs,
         "command_timeout_seconds": args.command_timeout_seconds,
+        "strict_side_effects": args.strict_side_effects,
     }
     case_results, summary = eval_runner.run(generated_suite, run_config)
     write_evidence_pack(args.out, generated_suite, run_config, summary, case_results)
@@ -227,6 +243,20 @@ def cmd_registry_baseline_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_registry_baseline_promote(args: argparse.Namespace) -> int:
+    payload = promote_baseline(
+        name=args.name,
+        run_path=args.run,
+        approved_by=args.approved_by,
+        rationale=args.rationale,
+        dataset_id=args.dataset_id,
+        notes=args.notes,
+        path=args.registry_path,
+    )
+    print(json.dumps({"promotion": payload, "registry_path": args.registry_path}))
+    return 0
+
+
 def cmd_registry_baseline_show(args: argparse.Namespace) -> int:
     entry = get_baseline(args.name, path=args.registry_path)
     if entry is None:
@@ -243,17 +273,84 @@ def cmd_registry_baseline_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_registry_approval_list(args: argparse.Namespace) -> int:
+    rows = list_approvals(name=args.name, path=args.registry_path)
+    print(
+        json.dumps(
+            {
+                "approvals": rows,
+                "count": len(rows),
+                "registry_path": args.registry_path,
+            }
+        )
+    )
+    return 0
+
+
+def cmd_registry_waiver_add(args: argparse.Namespace) -> int:
+    entry = add_waiver(
+        baseline_name=args.baseline_name,
+        reason=args.reason,
+        approved_by=args.approved_by,
+        case_id=args.case_id,
+        judge_id=args.judge_id,
+        regression_key=args.regression_key,
+        expires_at=args.expires_at,
+        path=args.registry_path,
+    )
+    print(json.dumps({"waiver": entry, "registry_path": args.registry_path}))
+    return 0
+
+
+def cmd_registry_waiver_list(args: argparse.Namespace) -> int:
+    rows = list_waivers(
+        baseline_name=args.baseline_name,
+        active_only=args.active_only,
+        path=args.registry_path,
+    )
+    print(
+        json.dumps(
+            {"waivers": rows, "count": len(rows), "registry_path": args.registry_path}
+        )
+    )
+    return 0
+
+
+def cmd_registry_audit_log(args: argparse.Namespace) -> int:
+    rows = list_audit_log(path=args.registry_path, limit=args.limit)
+    print(json.dumps({"audit_log": rows, "count": len(rows), "registry_path": args.registry_path}))
+    return 0
+
+
 def cmd_gate(args: argparse.Namespace) -> int:
     with Path(args.compare).open("r", encoding="utf-8") as handle:
         compare_report = json.load(handle)
+
+    waived_case_ids: set[str] = set()
+    waiver_refs: list[dict[str, Any]] = []
+    if args.apply_waivers:
+        if not args.baseline_name:
+            raise ValueError("--baseline-name is required when --apply-waivers is set")
+        waiver_refs = get_active_waivers_for_baseline(
+            args.baseline_name, path=args.registry_path
+        )
+        for waiver in waiver_refs:
+            case_id = waiver.get("case_id")
+            if isinstance(case_id, str) and case_id:
+                waived_case_ids.add(case_id)
 
     thresholds = GateThresholds(
         min_pass_rate=args.min_pass_rate,
         max_hard_fail_rate=args.max_hard_fail_rate,
         max_pass_rate_drop=args.max_pass_rate_drop,
         max_hard_fail_increase=args.max_hard_fail_increase,
+        max_regressed_cases=args.max_regressed_cases,
+        max_new_hard_fail_cases=args.max_new_hard_fail_cases,
     )
-    decision = evaluate_gate(compare_report, thresholds)
+    decision = evaluate_gate(
+        compare_report, thresholds, waived_case_ids=waived_case_ids
+    )
+    decision["waiver_refs"] = waiver_refs
 
     if args.out:
         out_path = Path(args.out)
@@ -323,6 +420,45 @@ def cmd_import_trace(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_import_framework(args: argparse.Namespace) -> int:
+    suite = import_framework_to_suite(
+        input_path=args.input,
+        framework=args.framework,
+        dataset_id=args.dataset_id,
+        case_prefix=args.case_prefix,
+        strict=args.strict,
+    )
+    if not suite["cases"]:
+        print(
+            json.dumps(
+                {
+                    "input": str(args.input),
+                    "framework": args.framework,
+                    "error": "no trace cases were imported",
+                }
+            )
+        )
+        return 1
+
+    write_json(args.out, suite)
+    if args.diagnostics_out:
+        write_json(args.diagnostics_out, suite["metadata"].get("import_diagnostics", []))
+    print(
+        json.dumps(
+            {
+                "out": str(args.out),
+                "dataset_id": args.dataset_id,
+                "cases": len(suite["cases"]),
+                "framework_case_counts": suite["metadata"]["framework_case_counts"],
+                "diagnostics_count": len(
+                    suite["metadata"].get("import_diagnostics", [])
+                ),
+            }
+        )
+    )
+    return 0
+
+
 def cmd_replay(args: argparse.Namespace) -> int:
     report = replay_run(args.run, args.out)
     print(json.dumps(report))
@@ -339,6 +475,30 @@ def cmd_export_otel(args: argparse.Namespace) -> int:
     out = export_run_to_otel(args.run, args.out)
     print(json.dumps({"out": str(out)}))
     return 0
+
+
+def cmd_attest(args: argparse.Namespace) -> int:
+    manifest_path = apply_manifest_hashes(args.run)
+    out = write_attestation(
+        args.run,
+        out_path=args.out,
+        secret=args.secret,
+        signer=args.signer,
+    )
+    print(json.dumps({"manifest": str(manifest_path), "attestation": str(out)}))
+    return 0
+
+
+def cmd_verify_attestation(args: argparse.Namespace) -> int:
+    report = verify_attestation(
+        args.run,
+        attestation_path=args.attestation,
+        secret=args.secret,
+    )
+    if args.out:
+        write_json(args.out, report)
+    print(json.dumps(report))
+    return 0 if report["passed"] else 1
 
 
 def cmd_report_markdown(args: argparse.Namespace) -> int:
@@ -395,6 +555,43 @@ def cmd_contracts_check(args: argparse.Namespace) -> int:
         write_json(args.out, report)
     print(json.dumps(report))
     return 0 if report["passed"] else 1
+
+
+def cmd_stability_check(args: argparse.Namespace) -> int:
+    judge_names = args.judge or list(DEFAULT_JUDGES)
+    judge_configs = _load_json(args.judge_config)
+    options = StabilityOptions(
+        runs=args.runs,
+        execution_mode=args.execution_mode,
+        propose_command=args.propose_command,
+        repair_command=args.repair_command,
+        max_repairs=args.max_repairs,
+        command_timeout_seconds=args.command_timeout_seconds,
+        strict_side_effects=args.strict_side_effects,
+        quarantine_min_pass_rate=args.quarantine_min_pass_rate,
+    )
+    report = run_stability_check(
+        args.suite,
+        judge_names=judge_names,
+        judge_configs=judge_configs if isinstance(judge_configs, dict) else {},
+        options=options,
+    )
+    if args.out:
+        write_json(args.out, report)
+    print(json.dumps(report))
+    return 0 if not report["flaky_case_ids"] else 1
+
+
+def cmd_benchmark_generate(args: argparse.Namespace) -> int:
+    out = write_benchmark_suite(
+        archetype=args.archetype,
+        cases=args.cases,
+        out_path=args.out,
+        seed=args.seed,
+        dataset_id=args.dataset_id,
+    )
+    print(json.dumps({"out": str(out), "archetype": args.archetype, "cases": args.cases}))
+    return 0
 
 
 def _add_run_identity_args(parser: argparse.ArgumentParser) -> None:
@@ -457,6 +654,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_loop_parser.add_argument("--max-repairs", type=int, default=2)
     run_loop_parser.add_argument("--command-timeout-seconds", type=int, default=30)
+    run_loop_parser.add_argument(
+        "--strict-side-effects",
+        action="store_true",
+        help="Fail loop attempts when tool calls do not have deterministic side-effect responses",
+    )
     _add_run_identity_args(run_loop_parser)
     _add_judge_args(run_loop_parser)
     run_loop_parser.set_defaults(func=cmd_run_loop)
@@ -491,6 +693,23 @@ def build_parser() -> argparse.ArgumentParser:
     gate_parser.add_argument("--max-hard-fail-rate", type=float, default=None)
     gate_parser.add_argument("--max-pass-rate-drop", type=float, default=None)
     gate_parser.add_argument("--max-hard-fail-increase", type=float, default=None)
+    gate_parser.add_argument("--max-regressed-cases", type=int, default=None)
+    gate_parser.add_argument("--max-new-hard-fail-cases", type=int, default=None)
+    gate_parser.add_argument(
+        "--apply-waivers",
+        action="store_true",
+        help="Apply active baseline waivers from registry during gate evaluation",
+    )
+    gate_parser.add_argument(
+        "--baseline-name",
+        default=None,
+        help="Baseline name used to resolve active waivers (required with --apply-waivers)",
+    )
+    gate_parser.add_argument(
+        "--registry-path",
+        default=DEFAULT_REGISTRY_PATH,
+        help="Registry path for baseline waivers (default: .agent_eval/registry.json)",
+    )
     gate_parser.add_argument(
         "--out", default=None, help="Output path for gate decision JSON"
     )
@@ -547,6 +766,42 @@ def build_parser() -> argparse.ArgumentParser:
     )
     import_parser.set_defaults(func=cmd_import_trace)
 
+    framework_import_parser = subparsers.add_parser(
+        "import-framework",
+        help="Import framework-native trace exports into Agent Eval Suite schema",
+    )
+    framework_import_parser.add_argument(
+        "--framework",
+        default="auto",
+        choices=list(FRAMEWORKS),
+        help="Framework trace format (default: auto detect)",
+    )
+    framework_import_parser.add_argument("--input", required=True, help="Input JSON or JSONL path")
+    framework_import_parser.add_argument(
+        "--out", required=True, help="Output suite JSON path in internal schema"
+    )
+    framework_import_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Fail import on empty parsed traces",
+    )
+    framework_import_parser.add_argument(
+        "--dataset-id",
+        default="framework-imported-suite",
+        help="Dataset identifier written to output suite",
+    )
+    framework_import_parser.add_argument(
+        "--case-prefix",
+        default="case",
+        help="Case id prefix for imported cases",
+    )
+    framework_import_parser.add_argument(
+        "--diagnostics-out",
+        default=None,
+        help="Optional path to write import diagnostics JSON",
+    )
+    framework_import_parser.set_defaults(func=cmd_import_framework)
+
     replay_parser = subparsers.add_parser(
         "replay",
         help="Re-execute judge scoring from an evidence pack and verify pinned environment",
@@ -584,6 +839,42 @@ def build_parser() -> argparse.ArgumentParser:
     )
     otel_parser.add_argument("--out", required=True, help="Output JSONL path")
     otel_parser.set_defaults(func=cmd_export_otel)
+
+    attest_parser = subparsers.add_parser(
+        "attest", help="Generate provenance attestation for an evidence pack"
+    )
+    attest_parser.add_argument("--run", required=True, help="Path to evidence pack directory")
+    attest_parser.add_argument(
+        "--out", default=None, help="Optional output path for attestation JSON"
+    )
+    attest_parser.add_argument(
+        "--secret",
+        default=None,
+        help="Optional signing secret (HMAC-SHA256). Omit for unsigned attestation.",
+    )
+    attest_parser.add_argument("--signer", default="local")
+    attest_parser.set_defaults(func=cmd_attest)
+
+    verify_attest_parser = subparsers.add_parser(
+        "verify-attestation", help="Verify evidence pack attestation and hashes"
+    )
+    verify_attest_parser.add_argument(
+        "--run", required=True, help="Path to evidence pack directory"
+    )
+    verify_attest_parser.add_argument(
+        "--attestation",
+        default=None,
+        help="Optional attestation file path (defaults to run/provenance_attestation.json)",
+    )
+    verify_attest_parser.add_argument(
+        "--secret",
+        default=None,
+        help="Optional signing secret for signature verification",
+    )
+    verify_attest_parser.add_argument(
+        "--out", default=None, help="Optional JSON output path for verify report"
+    )
+    verify_attest_parser.set_defaults(func=cmd_verify_attestation)
 
     report_parser = subparsers.add_parser(
         "report", help="Generate human-readable reports from eval artifacts"
@@ -693,6 +984,71 @@ def build_parser() -> argparse.ArgumentParser:
     )
     contracts_check_parser.set_defaults(func=cmd_contracts_check)
 
+    stability_parser = subparsers.add_parser(
+        "stability-check",
+        help="Run repeated evaluations to detect flaky behavior and recommend quarantine lanes",
+    )
+    stability_parser.add_argument("--suite", required=True, help="Path to eval suite JSON")
+    stability_parser.add_argument(
+        "--runs", type=int, default=5, help="Number of repeated runs (>=2)"
+    )
+    stability_parser.add_argument(
+        "--execution-mode",
+        choices=["trace_score", "propose_execute_repair"],
+        default="trace_score",
+        help="Execution mode for each stability run",
+    )
+    stability_parser.add_argument(
+        "--propose-command",
+        default=None,
+        help="Required when --execution-mode propose_execute_repair",
+    )
+    stability_parser.add_argument(
+        "--repair-command",
+        default=None,
+        help="Optional repair command for propose_execute_repair mode",
+    )
+    stability_parser.add_argument("--max-repairs", type=int, default=2)
+    stability_parser.add_argument("--command-timeout-seconds", type=int, default=30)
+    stability_parser.add_argument(
+        "--strict-side-effects",
+        action="store_true",
+        help="Fail propose/repair attempts when side-effect responses are missing",
+    )
+    stability_parser.add_argument(
+        "--quarantine-min-pass-rate",
+        type=float,
+        default=0.98,
+        help="Recommend quarantine when flaky case pass_rate is below this threshold",
+    )
+    stability_parser.add_argument(
+        "--out", default=None, help="Optional JSON output path for stability report"
+    )
+    _add_judge_args(stability_parser)
+    stability_parser.set_defaults(func=cmd_stability_check)
+
+    benchmark_parser = subparsers.add_parser(
+        "benchmark-generate",
+        help="Generate synthetic public benchmark suite by agent archetype",
+    )
+    benchmark_parser.add_argument(
+        "--archetype",
+        required=True,
+        choices=list(ARCHETYPES),
+        help="Benchmark archetype",
+    )
+    benchmark_parser.add_argument(
+        "--cases", type=int, default=20, help="Number of benchmark cases"
+    )
+    benchmark_parser.add_argument(
+        "--seed", type=int, default=0, help="Deterministic benchmark generator seed"
+    )
+    benchmark_parser.add_argument(
+        "--dataset-id", default=None, help="Optional dataset id override"
+    )
+    benchmark_parser.add_argument("--out", required=True, help="Output suite JSON path")
+    benchmark_parser.set_defaults(func=cmd_benchmark_generate)
+
     registry_parser = subparsers.add_parser(
         "registry", help="Manage local dataset and baseline registry"
     )
@@ -748,6 +1104,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     baseline_list_parser.set_defaults(func=cmd_registry_baseline_list)
 
+    baseline_promote_parser = registry_subparsers.add_parser(
+        "baseline-promote", help="Set baseline and record approval metadata"
+    )
+    baseline_promote_parser.add_argument("--name", required=True)
+    baseline_promote_parser.add_argument("--run", required=True, help="Evidence pack run directory")
+    baseline_promote_parser.add_argument("--approved-by", required=True)
+    baseline_promote_parser.add_argument("--rationale", required=True)
+    baseline_promote_parser.add_argument("--dataset-id", default=None)
+    baseline_promote_parser.add_argument("--notes", default=None)
+    baseline_promote_parser.add_argument(
+        "--registry-path",
+        default=DEFAULT_REGISTRY_PATH,
+        help="Registry path (default: .agent_eval/registry.json)",
+    )
+    baseline_promote_parser.set_defaults(func=cmd_registry_baseline_promote)
+
     baseline_show_parser = registry_subparsers.add_parser(
         "baseline-show", help="Show one named baseline"
     )
@@ -758,6 +1130,61 @@ def build_parser() -> argparse.ArgumentParser:
         help="Registry path (default: .agent_eval/registry.json)",
     )
     baseline_show_parser.set_defaults(func=cmd_registry_baseline_show)
+
+    approval_list_parser = registry_subparsers.add_parser(
+        "approval-list", help="List baseline promotion approvals"
+    )
+    approval_list_parser.add_argument("--name", default=None)
+    approval_list_parser.add_argument(
+        "--registry-path",
+        default=DEFAULT_REGISTRY_PATH,
+        help="Registry path (default: .agent_eval/registry.json)",
+    )
+    approval_list_parser.set_defaults(func=cmd_registry_approval_list)
+
+    waiver_add_parser = registry_subparsers.add_parser(
+        "waiver-add", help="Add a baseline waiver for a known regression scope"
+    )
+    waiver_add_parser.add_argument("--baseline-name", required=True)
+    waiver_add_parser.add_argument("--approved-by", required=True)
+    waiver_add_parser.add_argument("--reason", required=True)
+    waiver_add_parser.add_argument("--case-id", default=None)
+    waiver_add_parser.add_argument("--judge-id", default=None)
+    waiver_add_parser.add_argument("--regression-key", default=None)
+    waiver_add_parser.add_argument(
+        "--expires-at",
+        default=None,
+        help="Optional ISO-8601 expiry timestamp for this waiver",
+    )
+    waiver_add_parser.add_argument(
+        "--registry-path",
+        default=DEFAULT_REGISTRY_PATH,
+        help="Registry path (default: .agent_eval/registry.json)",
+    )
+    waiver_add_parser.set_defaults(func=cmd_registry_waiver_add)
+
+    waiver_list_parser = registry_subparsers.add_parser(
+        "waiver-list", help="List waivers"
+    )
+    waiver_list_parser.add_argument("--baseline-name", default=None)
+    waiver_list_parser.add_argument("--active-only", action="store_true")
+    waiver_list_parser.add_argument(
+        "--registry-path",
+        default=DEFAULT_REGISTRY_PATH,
+        help="Registry path (default: .agent_eval/registry.json)",
+    )
+    waiver_list_parser.set_defaults(func=cmd_registry_waiver_list)
+
+    audit_log_parser = registry_subparsers.add_parser(
+        "audit-log", help="Show registry audit events"
+    )
+    audit_log_parser.add_argument("--limit", type=int, default=100)
+    audit_log_parser.add_argument(
+        "--registry-path",
+        default=DEFAULT_REGISTRY_PATH,
+        help="Registry path (default: .agent_eval/registry.json)",
+    )
+    audit_log_parser.set_defaults(func=cmd_registry_audit_log)
 
     return parser
 

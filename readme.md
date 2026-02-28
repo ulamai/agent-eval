@@ -22,10 +22,15 @@ Ship agents with evidence, not guesswork:
    - `ToolContractJudge`
    - `PolicyJudge`
    - `RegexJudge` / `JSONSchemaJudge`
+   - release-risk judges: `CostBudgetJudge`, `LatencySLOJudge`, `RetryStormJudge`, `LoopGuardJudge`, `ToolAbuseJudge`, `PromptInjectionJudge`
 5. Optional `LeanJudge` plugin via external adapter command contract.
 6. Local artifact outputs:
    - machine-readable JSON report
    - evidence pack folder structure
+7. Stability/flakiness runner (`stability-check`) with quarantine recommendations.
+8. Baseline governance primitives: promotions, approvals, waivers, audit logs.
+9. Integrity/provenance tools: manifest hashes + attest/verify commands.
+10. Framework import adapters and public benchmark generation.
 
 ## Core Concepts
 
@@ -116,13 +121,19 @@ agent-eval init --out .
 agent-eval run --suite examples/suite_good.json --out runs/baseline --run-id baseline-1
 agent-eval run --suite examples/suite_bad.json --out runs/candidate --run-id candidate-1
 agent-eval compare --baseline runs/baseline --candidate runs/candidate --out runs/candidate/compare/baseline_delta.json
-agent-eval gate --compare runs/candidate/compare/baseline_delta.json --min-pass-rate 0.95 --max-hard-fail-increase 0.00
+agent-eval gate \
+  --compare runs/candidate/compare/baseline_delta.json \
+  --min-pass-rate 0.95 \
+  --max-hard-fail-increase 0.00 \
+  --max-regressed-cases 0 \
+  --max-new-hard-fail-cases 0
 ```
 
 CI usage: `agent-eval gate` returns exit code `0` on pass and `1` on gate failure.
 
 `agent-eval compare` includes aggregate deltas and per-case regression details (`case_regressions`) when run artifacts are available.
-It also emits richer report sections: `overview`, `top_regressed_judges`, and ranked `failure_clusters`.
+It also emits richer report sections: `overview`, `top_regressed_judges`, ranked `failure_clusters`,
+`triage.top_clusters`, and `release_impact` scoring/recommendation.
 
 ## Dataset + Baseline Registry
 
@@ -131,11 +142,19 @@ Use the local registry to track datasets and named baselines:
 ```bash
 agent-eval registry dataset-add --suite suites/starter_suite.json --dataset-id starter-suite
 agent-eval registry baseline-set --name main --run runs/baseline
+agent-eval registry baseline-promote --name main --run runs/baseline --approved-by qa@company --rationale "release baseline"
 agent-eval compare --baseline main --candidate runs/candidate
 ```
 
 Registry default path: `.agent_eval/registry.json` (override with `--registry-path`).
 By default, `compare` enforces baseline/candidate compatibility (dataset and case checks). Use `--allow-incompatible` to bypass.
+
+Waivers (scoped by baseline/case/judge) are supported and can be applied during gate:
+
+```bash
+agent-eval registry waiver-add --baseline-name main --case-id case-42 --approved-by qa@company --reason "known issue"
+agent-eval gate --compare runs/candidate/compare/baseline_delta.json --max-regressed-cases 0 --apply-waivers --baseline-name main
+```
 
 ## Propose/Execute/Repair Loop
 
@@ -146,6 +165,7 @@ agent-eval run-loop \
   --suite suites/starter_suite.json \
   --out runs/loop \
   --propose-command "python my_agent_adapter.py" \
+  --strict-side-effects \
   --max-repairs 2
 ```
 
@@ -157,6 +177,7 @@ Adapter command contract:
   - `tool_calls` as `[{ "tool": "...", "arguments": {...} }]`
 
 Tool execution is deterministic from per-case `metadata.tool_responses`.
+For argument-level determinism, provide `metadata.tool_response_cassette`.
 
 ## Replay + Environment Pinning
 
@@ -183,6 +204,13 @@ agent-eval replay-exec --run runs/loop --out runs/loop/compare/replay_exec_repor
 
 `agent-eval replay-exec` returns exit code `0` only when execution replay fully matches.
 
+Generate and verify evidence integrity attestations:
+
+```bash
+agent-eval attest --run runs/candidate --secret "$ATTESTATION_SECRET"
+agent-eval verify-attestation --run runs/candidate --secret "$ATTESTATION_SECRET"
+```
+
 ## Trace Import Adapters
 
 Use `import-trace` to normalize external exports into this repo's trace schema:
@@ -208,6 +236,52 @@ Run strict conformance checks:
 
 ```bash
 agent-eval adapter-conformance --fixtures-dir tests/fixtures/adapters --min-fixtures-per-provider 2
+```
+
+Framework-native imports are also supported:
+
+```bash
+agent-eval import-framework --framework auto --input exports/framework_dump.json --out suites/framework_imported.json
+```
+
+Supported frameworks:
+
+- `auto`
+- `langgraph`
+- `openai_agents`
+- `autogen`
+- `crewai`
+- `semantic_kernel`
+
+## Release-Risk Judges
+
+Available deterministic risk judges:
+
+- `cost_budget`
+- `latency_slo`
+- `retry_storm`
+- `loop_guard`
+- `tool_abuse`
+- `prompt_injection`
+
+Enable any subset with repeated `--judge` flags and pass config via `--judge-config`.
+
+## Stability / Flakiness
+
+Run repeated evals to detect flaky cases and produce quarantine recommendations:
+
+```bash
+agent-eval stability-check --suite suites/starter_suite.json --runs 10 --out runs/stability.json
+```
+
+`stability-check` returns exit code `1` when flaky cases are detected.
+
+## Benchmarks
+
+Generate synthetic public benchmark suites by archetype:
+
+```bash
+agent-eval benchmark-generate --archetype support_agent --cases 50 --out benchmarks/public/support_agent_50.json
 ```
 
 ## OpenTelemetry Export
@@ -269,5 +343,12 @@ No hosted CI integration is required for packaging:
 ```bash
 ./scripts/check_contracts.sh
 ./scripts/release_local.sh
-docker build -t agent-eval-suite:0.1.1 .
+docker build -t agent-eval-suite:0.1.2 .
 ```
+
+`init` scaffolds CI templates for:
+
+- GitLab CI
+- Buildkite
+- CircleCI
+- Jenkins

@@ -39,6 +39,42 @@ def _base_case_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     return sanitized
 
 
+def _call_fingerprint(tool: str | None, arguments: Any) -> str:
+    if isinstance(arguments, (dict, list)):
+        encoded = json.dumps(arguments, sort_keys=True)
+    else:
+        encoded = str(arguments)
+    return f"{tool or 'unknown'}::{encoded}"
+
+
+def _resolve_tool_response(
+    metadata: dict[str, Any],
+    tool: str | None,
+    arguments: Any,
+) -> tuple[Any, str, bool]:
+    # Highest precedence: exact tool/args cassette entries.
+    cassette = metadata.get("tool_response_cassette")
+    if isinstance(cassette, dict):
+        key = _call_fingerprint(tool, arguments)
+        if key in cassette:
+            return cassette[key], "tool_response_cassette", False
+    elif isinstance(cassette, list):
+        for row in cassette:
+            if not isinstance(row, dict):
+                continue
+            if row.get("tool") != tool:
+                continue
+            if row.get("arguments") == arguments:
+                return row.get("response"), "tool_response_cassette", False
+
+    # Fallback: tool-name level deterministic map.
+    tool_responses = metadata.get("tool_responses", {})
+    if isinstance(tool_responses, dict) and isinstance(tool, str) and tool in tool_responses:
+        return tool_responses[tool], "tool_responses", False
+
+    return {"error": "unknown_tool"}, "missing", True
+
+
 def _run_agent_command(command: list[str], payload: dict[str, Any], timeout_seconds: int) -> dict[str, Any]:
     completed = subprocess.run(
         command,
@@ -89,7 +125,7 @@ def _build_attempt_trace(
     attempt: int,
     assistant_output: Any,
     tool_calls: list[dict[str, Any]],
-    tool_responses: dict[str, Any],
+    tool_results: list[dict[str, Any]],
     command_error: str | None = None,
 ) -> list[TraceEvent]:
     trace_id = uuid.uuid4().hex
@@ -138,7 +174,7 @@ def _build_attempt_trace(
         )
         return events
 
-    for call in tool_calls:
+    for index, call in enumerate(tool_calls):
         if not isinstance(call, dict):
             continue
         tool_name = call.get("tool") or call.get("name")
@@ -149,7 +185,12 @@ def _build_attempt_trace(
             tool=str(tool_name) if tool_name is not None else None,
             input_payload=arguments,
         )
-        response = tool_responses.get(str(tool_name), {"error": "unknown_tool"})
+        response_row = (
+            tool_results[index]
+            if index < len(tool_results) and isinstance(tool_results[index], dict)
+            else {"response": {"error": "unknown_tool"}}
+        )
+        response = response_row.get("response", {"error": "unknown_tool"})
         response_error = None
         response_output = response
         if isinstance(response, dict) and "error" in response:
@@ -175,12 +216,14 @@ class ProposeExecuteRepairRunner:
         repair_command: str | None = None,
         max_repairs: int = 2,
         timeout_seconds: int = 30,
+        strict_side_effects: bool = False,
     ):
         self.eval_runner = eval_runner
         self.propose_command = _parse_command(propose_command)
         self.repair_command = _parse_command(repair_command) if repair_command else None
         self.max_repairs = max_repairs
         self.timeout_seconds = timeout_seconds
+        self.strict_side_effects = strict_side_effects
 
     def _run_case_attempt(
         self,
@@ -210,12 +253,42 @@ class ProposeExecuteRepairRunner:
         }
 
         response = _run_agent_command(command, payload, self.timeout_seconds)
+        resolved_tools: list[dict[str, Any]] = []
+        missing_side_effects = 0
+        for call in response.get("tool_calls", []):
+            if not isinstance(call, dict):
+                continue
+            tool_name = call.get("tool") or call.get("name")
+            arguments = call.get("arguments", call.get("input", {}))
+            tool_response, source, missing = _resolve_tool_response(
+                base_metadata, str(tool_name) if tool_name is not None else None, arguments
+            )
+            if missing:
+                missing_side_effects += 1
+            resolved_tools.append(
+                {
+                    "tool": tool_name,
+                    "arguments": arguments,
+                    "response": tool_response,
+                    "source": source,
+                }
+            )
+
+        if self.strict_side_effects and missing_side_effects > 0:
+            existing_error = str(response.get("error", "")).strip()
+            strict_error = (
+                f"missing deterministic side effect response(s): {missing_side_effects}"
+            )
+            response["error"] = (
+                f"{existing_error}; {strict_error}" if existing_error else strict_error
+            )
+        response["side_effects"] = resolved_tools
         attempt_trace = _build_attempt_trace(
             case=case,
             attempt=attempt,
             assistant_output=response.get("assistant_output"),
             tool_calls=response.get("tool_calls", []),
-            tool_responses=case.metadata.get("tool_responses", {}),
+            tool_results=resolved_tools,
             command_error=response.get("error"),
         )
         attempt_case = EvalCase(

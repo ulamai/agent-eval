@@ -18,7 +18,11 @@ class InitCommandTest(unittest.TestCase):
             self.assertTrue((tmp_dir / "suites" / "starter_suite.json").exists())
             self.assertTrue((tmp_dir / "config" / "judges.json").exists())
             self.assertTrue((tmp_dir / "config" / "gate.json").exists())
-            self.assertTrue((tmp_dir / "ci" / "github-actions-agent-eval.yml").exists())
+            self.assertTrue((tmp_dir / "ci" / "gitlab-agent-eval.yml").exists())
+            self.assertTrue((tmp_dir / "ci" / "buildkite-agent-eval.yml").exists())
+            self.assertTrue((tmp_dir / "ci" / "circleci-agent-eval.yml").exists())
+            self.assertTrue((tmp_dir / "ci" / "Jenkinsfile.agent-eval").exists())
+            self.assertTrue((tmp_dir / "ci" / "run-agent-eval.sh").exists())
 
             second_exit = main(["init", "--out", str(tmp_dir)])
             self.assertEqual(1, second_exit)

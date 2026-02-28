@@ -232,6 +232,8 @@ class GovernanceAndReportingTest(unittest.TestCase):
             text = markdown_report.read_text("utf-8")
             self.assertIn("# Release Eval Report", text)
             self.assertIn("## Overview", text)
+            self.assertIn("## Release Impact", text)
+            self.assertIn("## Triage Fix Hints", text)
             self.assertIn("## Gate Decision", text)
             self.assertIn("## Replay & Environment", text)
 
