@@ -9,6 +9,60 @@ from agent_eval_suite.schema import TraceEvent
 
 PROVIDERS = ("auto", "openai", "anthropic", "vertex", "foundry")
 
+KNOWN_TOP_LEVEL_KEYS: dict[str, set[str]] = {
+    "openai": {
+        "id",
+        "object",
+        "created",
+        "model",
+        "messages",
+        "response",
+        "output",
+        "events",
+        "metadata",
+        "system",
+        "input",
+        "tool_choice",
+        "tools",
+        "temperature",
+    },
+    "anthropic": {
+        "id",
+        "type",
+        "role",
+        "model",
+        "content",
+        "messages",
+        "input",
+        "usage",
+        "stop_reason",
+        "metadata",
+        "anthropic_version",
+        "system",
+        "tools",
+    },
+    "vertex": {
+        "contents",
+        "candidates",
+        "predictions",
+        "metadata",
+        "model",
+        "safetySettings",
+        "generationConfig",
+    },
+    "foundry": {
+        "steps",
+        "messages",
+        "events",
+        "response",
+        "output",
+        "metadata",
+        "model",
+        "azureml",
+        "trace",
+    },
+}
+
 
 def _safe_json_loads(value: Any) -> Any:
     if isinstance(value, str):
@@ -458,6 +512,14 @@ def detect_provider(record: dict[str, Any]) -> str:
     return "openai"
 
 
+def _unknown_top_level_fields(record: dict[str, Any], provider: str) -> list[str]:
+    known = KNOWN_TOP_LEVEL_KEYS.get(provider, set())
+    if not known:
+        return []
+    unknown = [key for key in record.keys() if key not in known]
+    return sorted(unknown)
+
+
 PARSER_BY_PROVIDER: dict[str, Callable[[dict[str, Any]], tuple[list[TraceEvent], Any]]] = {
     "openai": parse_openai_record,
     "anthropic": parse_anthropic_record,
@@ -499,6 +561,7 @@ def import_to_suite(
     provider: str,
     dataset_id: str,
     case_prefix: str = "case",
+    strict: bool = False,
 ) -> dict[str, Any]:
     if provider not in PROVIDERS:
         raise ValueError(
@@ -508,12 +571,41 @@ def import_to_suite(
     records = load_trace_records(input_path)
     cases: list[dict[str, Any]] = []
     provider_counts: dict[str, int] = {}
+    diagnostics: list[dict[str, Any]] = []
 
     for index, record in enumerate(records, start=1):
         resolved_provider = provider if provider != "auto" else detect_provider(record)
+        unknown_fields = _unknown_top_level_fields(record, resolved_provider)
+        if unknown_fields:
+            diagnostics.append(
+                {
+                    "record_index": index,
+                    "provider": resolved_provider,
+                    "type": "unknown_top_level_fields",
+                    "fields": unknown_fields,
+                }
+            )
+            if strict:
+                raise ValueError(
+                    f"record {index} has unknown top-level fields for provider "
+                    f"{resolved_provider}: {', '.join(unknown_fields)}"
+                )
+
         parser = PARSER_BY_PROVIDER[resolved_provider]
         trace_events, case_input = parser(record)
         if not trace_events:
+            diagnostics.append(
+                {
+                    "record_index": index,
+                    "provider": resolved_provider,
+                    "type": "empty_trace",
+                    "detail": "record parsed with zero events and was dropped",
+                }
+            )
+            if strict:
+                raise ValueError(
+                    f"record {index} for provider {resolved_provider} produced empty trace"
+                )
             continue
 
         trace_id = uuid.uuid4().hex
@@ -549,5 +641,9 @@ def import_to_suite(
             "import_source": str(input_path),
             "selected_provider": provider,
             "provider_case_counts": provider_counts,
+            "imported_records": len(cases),
+            "total_records": len(records),
+            "dropped_records": len(records) - len(cases),
+            "import_diagnostics": diagnostics,
         },
     }

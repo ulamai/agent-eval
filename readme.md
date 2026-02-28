@@ -135,6 +135,7 @@ agent-eval compare --baseline main --candidate runs/candidate
 ```
 
 Registry default path: `.agent_eval/registry.json` (override with `--registry-path`).
+By default, `compare` enforces baseline/candidate compatibility (dataset and case checks). Use `--allow-incompatible` to bypass.
 
 ## Propose/Execute/Repair Loop
 
@@ -190,6 +191,7 @@ Supported providers:
 - `foundry`
 
 Imported events are enriched with OTel-style trace/span identifiers and GenAI attributes.
+Use `--strict` to fail on unknown top-level provider fields or empty parsed traces.
 
 Adapter conformance tests are included under `tests/fixtures/adapters/` and `tests/test_adapter_conformance.py`.
 
@@ -199,4 +201,12 @@ Export any run to OpenTelemetry-style GenAI JSONL:
 
 ```bash
 agent-eval export-otel --run runs/candidate --out runs/candidate/otel_events.jsonl
+```
+
+## Structured Errors
+
+Runtime failures return machine-readable JSON on stderr:
+
+```json
+{"error":{"code":"validation_error","message":"...","details":{...}}}
 ```

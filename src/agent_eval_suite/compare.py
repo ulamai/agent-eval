@@ -141,6 +141,71 @@ def _risk_level(pass_rate_delta: float, hard_fail_delta: float, regressed_cases:
     return "low"
 
 
+def _build_compatibility_report(
+    baseline: dict[str, Any],
+    candidate: dict[str, Any],
+    baseline_cases: dict[str, dict[str, Any]],
+    candidate_cases: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+
+    baseline_dataset_id = baseline.get("dataset_id")
+    candidate_dataset_id = candidate.get("dataset_id")
+    dataset_match = (
+        True
+        if not baseline_dataset_id or not candidate_dataset_id
+        else baseline_dataset_id == candidate_dataset_id
+    )
+    checks.append(
+        {
+            "name": "dataset_id_match",
+            "passed": dataset_match,
+            "baseline_dataset_id": baseline_dataset_id,
+            "candidate_dataset_id": candidate_dataset_id,
+        }
+    )
+
+    baseline_total_cases = int(baseline.get("total_cases", 0) or 0)
+    candidate_total_cases = int(candidate.get("total_cases", 0) or 0)
+    totals_match = (
+        True
+        if (baseline_total_cases == 0 or candidate_total_cases == 0)
+        else baseline_total_cases == candidate_total_cases
+    )
+    checks.append(
+        {
+            "name": "total_cases_match",
+            "passed": totals_match,
+            "baseline_total_cases": baseline_total_cases,
+            "candidate_total_cases": candidate_total_cases,
+        }
+    )
+
+    baseline_case_ids = set(baseline_cases.keys())
+    candidate_case_ids = set(candidate_cases.keys())
+    case_set_match = True
+    missing_in_candidate: list[str] = []
+    missing_in_baseline: list[str] = []
+    if baseline_case_ids and candidate_case_ids:
+        missing_in_candidate = sorted(baseline_case_ids - candidate_case_ids)
+        missing_in_baseline = sorted(candidate_case_ids - baseline_case_ids)
+        case_set_match = not missing_in_candidate and not missing_in_baseline
+    checks.append(
+        {
+            "name": "case_id_set_match",
+            "passed": case_set_match,
+            "baseline_case_count": len(baseline_case_ids),
+            "candidate_case_count": len(candidate_case_ids),
+            "missing_in_candidate": missing_in_candidate,
+            "missing_in_baseline": missing_in_baseline,
+        }
+    )
+
+    passed = all(check["passed"] for check in checks)
+    failures = [check for check in checks if not check["passed"]]
+    return {"passed": passed, "checks": checks, "failures": failures}
+
+
 def _case_regressions(
     baseline_cases: dict[str, dict[str, Any]], candidate_cases: dict[str, dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -190,7 +255,12 @@ def _case_regressions(
     return rows
 
 
-def compare_runs(baseline_path: str | Path, candidate_path: str | Path) -> dict[str, Any]:
+def compare_runs(
+    baseline_path: str | Path,
+    candidate_path: str | Path,
+    *,
+    enforce_compatibility: bool = False,
+) -> dict[str, Any]:
     baseline = load_summary(baseline_path)
     candidate = load_summary(candidate_path)
     baseline_cases = _index_case_results(baseline_path)
@@ -263,12 +333,23 @@ def compare_runs(baseline_path: str | Path, candidate_path: str | Path) -> dict[
     pass_rate_delta = float(metrics["pass_rate"]["delta"])
     hard_fail_delta = float(metrics["hard_fail_rate"]["delta"])
     risk_level = _risk_level(pass_rate_delta, hard_fail_delta, len(regressed_cases))
+    compatibility = _build_compatibility_report(
+        baseline=baseline,
+        candidate=candidate,
+        baseline_cases=baseline_cases,
+        candidate_cases=candidate_cases,
+    )
+    if enforce_compatibility and not compatibility["passed"]:
+        first = compatibility["failures"][0] if compatibility["failures"] else {}
+        reason = str(first.get("name", "compatibility check failed"))
+        raise ValueError(f"incompatible baseline/candidate runs: {reason}")
 
     return {
         "generated_at": datetime.now(UTC).isoformat(),
         "baseline_run_id": baseline.get("run_id"),
         "candidate_run_id": candidate.get("run_id"),
         "dataset_id": candidate.get("dataset_id") or baseline.get("dataset_id"),
+        "compatibility": compatibility,
         "metrics": metrics,
         "judge_metrics": judge_metrics,
         "case_regressions": case_regressions,

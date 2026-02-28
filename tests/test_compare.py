@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 
 from agent_eval_suite.cli import main
@@ -95,6 +97,112 @@ class CompareTest(unittest.TestCase):
                 0.1, report["metrics"]["hard_fail_rate"]["delta"], places=6
             )
             self.assertIn("policy", report["judge_metrics"])
+
+    def test_compatibility_check_blocks_mismatch_when_enforced(self) -> None:
+        baseline = {
+            "run_id": "a",
+            "dataset_id": "dataset-a",
+            "total_cases": 1,
+            "passed_cases": 1,
+            "failed_cases": 0,
+            "hard_fail_cases": 0,
+            "pass_rate": 1.0,
+            "hard_fail_rate": 0.0,
+            "judge_pass_rates": {},
+        }
+        candidate = {
+            "run_id": "b",
+            "dataset_id": "dataset-b",
+            "total_cases": 1,
+            "passed_cases": 1,
+            "failed_cases": 0,
+            "hard_fail_cases": 0,
+            "pass_rate": 1.0,
+            "hard_fail_rate": 0.0,
+            "judge_pass_rates": {},
+        }
+
+        with tempfile.TemporaryDirectory() as tmp_dir_str:
+            tmp_dir = Path(tmp_dir_str)
+            baseline_file = tmp_dir / "baseline.json"
+            candidate_file = tmp_dir / "candidate.json"
+            baseline_file.write_text(json.dumps(baseline), encoding="utf-8")
+            candidate_file.write_text(json.dumps(candidate), encoding="utf-8")
+
+            report = compare_runs(baseline_file, candidate_file)
+            self.assertFalse(report["compatibility"]["passed"])
+            self.assertEqual(
+                "dataset_id_match", report["compatibility"]["failures"][0]["name"]
+            )
+
+            with self.assertRaises(ValueError):
+                compare_runs(
+                    baseline_file, candidate_file, enforce_compatibility=True
+                )
+
+    def test_cli_compare_allow_incompatible(self) -> None:
+        baseline = {
+            "run_id": "a",
+            "dataset_id": "dataset-a",
+            "total_cases": 1,
+            "passed_cases": 1,
+            "failed_cases": 0,
+            "hard_fail_cases": 0,
+            "pass_rate": 1.0,
+            "hard_fail_rate": 0.0,
+            "judge_pass_rates": {},
+        }
+        candidate = {
+            "run_id": "b",
+            "dataset_id": "dataset-b",
+            "total_cases": 1,
+            "passed_cases": 1,
+            "failed_cases": 0,
+            "hard_fail_cases": 0,
+            "pass_rate": 1.0,
+            "hard_fail_rate": 0.0,
+            "judge_pass_rates": {},
+        }
+        with tempfile.TemporaryDirectory() as tmp_dir_str:
+            tmp_dir = Path(tmp_dir_str)
+            baseline_file = tmp_dir / "baseline.json"
+            candidate_file = tmp_dir / "candidate.json"
+            compare_file = tmp_dir / "compare.json"
+            baseline_file.write_text(json.dumps(baseline), encoding="utf-8")
+            candidate_file.write_text(json.dumps(candidate), encoding="utf-8")
+
+            stderr_buffer = io.StringIO()
+            with redirect_stderr(stderr_buffer):
+                strict_exit = main(
+                    [
+                        "compare",
+                        "--baseline",
+                        str(baseline_file),
+                        "--candidate",
+                        str(candidate_file),
+                        "--out",
+                        str(compare_file),
+                    ]
+                )
+            self.assertEqual(1, strict_exit)
+            strict_error = json.loads(stderr_buffer.getvalue().strip())
+            self.assertEqual("validation_error", strict_error["error"]["code"])
+
+            allow_exit = main(
+                [
+                    "compare",
+                    "--baseline",
+                    str(baseline_file),
+                    "--candidate",
+                    str(candidate_file),
+                    "--allow-incompatible",
+                    "--out",
+                    str(compare_file),
+                ]
+            )
+            self.assertEqual(0, allow_exit)
+            report = json.loads(compare_file.read_text("utf-8"))
+            self.assertFalse(report["compatibility"]["passed"])
 
 
 if __name__ == "__main__":

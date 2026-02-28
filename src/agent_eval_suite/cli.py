@@ -41,6 +41,13 @@ def _load_json(path: str | None) -> dict[str, Any]:
         return json.load(handle)
 
 
+def _emit_structured_error(
+    code: str, message: str, details: dict[str, Any] | None = None
+) -> None:
+    payload = {"error": {"code": code, "message": message, "details": details or {}}}
+    print(json.dumps(payload), file=sys.stderr)
+
+
 def _build_run_config(
     args: argparse.Namespace,
     suite: EvalSuite,
@@ -145,7 +152,11 @@ def cmd_compare(args: argparse.Namespace) -> int:
     baseline_path, baseline_entry = resolve_baseline_reference(
         args.baseline, path=args.registry_path
     )
-    report = compare_runs(baseline_path, args.candidate)
+    report = compare_runs(
+        baseline_path,
+        args.candidate,
+        enforce_compatibility=not args.allow_incompatible,
+    )
     report["baseline_reference"] = {
         "input": args.baseline,
         "resolved_path": baseline_path,
@@ -265,6 +276,7 @@ def cmd_import_trace(args: argparse.Namespace) -> int:
         provider=args.provider,
         dataset_id=args.dataset_id,
         case_prefix=args.case_prefix,
+        strict=args.strict,
     )
     if not suite["cases"]:
         print(
@@ -279,6 +291,8 @@ def cmd_import_trace(args: argparse.Namespace) -> int:
         return 1
 
     write_json(args.out, suite)
+    if args.diagnostics_out:
+        write_json(args.diagnostics_out, suite["metadata"].get("import_diagnostics", []))
     print(
         json.dumps(
             {
@@ -286,6 +300,9 @@ def cmd_import_trace(args: argparse.Namespace) -> int:
                 "dataset_id": args.dataset_id,
                 "cases": len(suite["cases"]),
                 "provider_case_counts": suite["metadata"]["provider_case_counts"],
+                "diagnostics_count": len(
+                    suite["metadata"].get("import_diagnostics", [])
+                ),
             }
         )
     )
@@ -381,6 +398,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Registry path used to resolve baseline names (default: .agent_eval/registry.json)",
     )
     compare_parser.add_argument(
+        "--allow-incompatible",
+        action="store_true",
+        help="Allow compare even if dataset/case compatibility checks fail",
+    )
+    compare_parser.add_argument(
         "--out", default=None, help="Output path for compare report JSON"
     )
     compare_parser.set_defaults(func=cmd_compare)
@@ -428,6 +450,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--out", required=True, help="Output suite JSON path in internal schema"
     )
     import_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Fail import on unknown top-level fields or empty parsed traces",
+    )
+    import_parser.add_argument(
         "--dataset-id",
         default="imported-suite",
         help="Dataset identifier written to output suite",
@@ -436,6 +463,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--case-prefix",
         default="case",
         help="Case id prefix for imported cases",
+    )
+    import_parser.add_argument(
+        "--diagnostics-out",
+        default=None,
+        help="Optional path to write import diagnostics JSON",
     )
     import_parser.set_defaults(func=cmd_import_trace)
 
@@ -534,8 +566,48 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
-    return args.func(args)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        # argparse already printed usage/help; preserve behavior.
+        code = exc.code if isinstance(exc.code, int) else 1
+        return code
+
+    try:
+        return args.func(args)
+    except FileNotFoundError as exc:
+        _emit_structured_error(
+            code="file_not_found",
+            message=str(exc),
+            details={"exception_type": exc.__class__.__name__},
+        )
+        return 1
+    except json.JSONDecodeError as exc:
+        _emit_structured_error(
+            code="invalid_json",
+            message=str(exc),
+            details={
+                "line": exc.lineno,
+                "column": exc.colno,
+                "position": exc.pos,
+                "exception_type": exc.__class__.__name__,
+            },
+        )
+        return 1
+    except ValueError as exc:
+        _emit_structured_error(
+            code="validation_error",
+            message=str(exc),
+            details={"exception_type": exc.__class__.__name__},
+        )
+        return 1
+    except Exception as exc:  # pragma: no cover - defensive top-level handler
+        _emit_structured_error(
+            code="internal_error",
+            message=str(exc),
+            details={"exception_type": exc.__class__.__name__},
+        )
+        return 1
 
 
 if __name__ == "__main__":

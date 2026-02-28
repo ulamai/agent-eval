@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 
 from agent_eval_suite.cli import main
@@ -132,6 +134,56 @@ class ImportTraceTest(unittest.TestCase):
             self.assertEqual(1, counts["anthropic"])
             self.assertEqual(1, counts["vertex"])
             self.assertEqual(1, counts["foundry"])
+
+    def test_non_strict_import_emits_unknown_field_diagnostics(self) -> None:
+        payload = {
+            "messages": [{"role": "user", "content": "ping"}],
+            "unexpected_field": {"raw": 1},
+        }
+        with tempfile.TemporaryDirectory() as tmp_dir_str:
+            tmp_dir = Path(tmp_dir_str)
+            input_file = tmp_dir / "openai.json"
+            input_file.write_text(json.dumps(payload), encoding="utf-8")
+
+            suite = import_to_suite(
+                input_path=input_file,
+                provider="openai",
+                dataset_id="diag-import",
+                strict=False,
+            )
+            diagnostics = suite["metadata"]["import_diagnostics"]
+            self.assertEqual(1, len(diagnostics))
+            self.assertEqual("unknown_top_level_fields", diagnostics[0]["type"])
+            self.assertIn("unexpected_field", diagnostics[0]["fields"])
+
+    def test_strict_import_rejects_unknown_fields(self) -> None:
+        payload = {
+            "messages": [{"role": "user", "content": "ping"}],
+            "unexpected_field": {"raw": 1},
+        }
+        with tempfile.TemporaryDirectory() as tmp_dir_str:
+            tmp_dir = Path(tmp_dir_str)
+            input_file = tmp_dir / "openai.json"
+            out_file = tmp_dir / "suite.json"
+            input_file.write_text(json.dumps(payload), encoding="utf-8")
+
+            stderr_buffer = io.StringIO()
+            with redirect_stderr(stderr_buffer):
+                exit_code = main(
+                    [
+                        "import-trace",
+                        "--provider",
+                        "openai",
+                        "--strict",
+                        "--input",
+                        str(input_file),
+                        "--out",
+                        str(out_file),
+                    ]
+                )
+            self.assertEqual(1, exit_code)
+            error_payload = json.loads(stderr_buffer.getvalue().strip())
+            self.assertEqual("validation_error", error_payload["error"]["code"])
 
 
 if __name__ == "__main__":
