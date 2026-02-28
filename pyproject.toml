@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-eval-suite"
+version = "0.1.0"
+description = "Opinionated offline evaluation and CI gating for agent runs."
+readme = "readme.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "Agent Eval Suite" }
+]
+dependencies = []
+
+[project.optional-dependencies]
+lean = []
+
+[project.scripts]
+agent-eval = "agent_eval_suite.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]

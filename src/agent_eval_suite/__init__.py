@@ -1,0 +1,3 @@
+from agent_eval_suite.schema import SCHEMA_VERSION
+
+__all__ = ["SCHEMA_VERSION"]
