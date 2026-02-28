@@ -1,0 +1,34 @@
+{
+  "dataset_id": "legacy-sparse",
+  "cases": [
+    {
+      "case_id": "legacy-sparse-1",
+      "expected": "pong",
+      "regex": [
+        "pong"
+      ],
+      "tool_contracts": {
+        "ping": {
+          "required": [
+            "target"
+          ],
+          "forbidden": [
+            "secret"
+          ]
+        }
+      },
+      "trace": [
+        {
+          "actor": "user",
+          "type": "message",
+          "input": "ping"
+        },
+        {
+          "actor": "assistant",
+          "type": "message",
+          "output": "pong"
+        }
+      ]
+    }
+  ]
+}

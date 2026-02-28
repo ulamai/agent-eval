@@ -53,6 +53,7 @@ class LoopReplayOtelTest(unittest.TestCase):
             suite_file = tmp_dir / "suite.json"
             run_dir = tmp_dir / "run-loop"
             replay_report = tmp_dir / "replay.json"
+            replay_exec_report = tmp_dir / "replay_exec.json"
             otel_file = tmp_dir / "otel.jsonl"
             suite_file.write_text(json.dumps(suite_payload), encoding="utf-8")
 
@@ -89,6 +90,13 @@ class LoopReplayOtelTest(unittest.TestCase):
             self.assertEqual(0, replay_exit)
             replay_payload = json.loads(replay_report.read_text("utf-8"))
             self.assertTrue(replay_payload["replay_passed"])
+
+            replay_exec_exit = main(
+                ["replay-exec", "--run", str(run_dir), "--out", str(replay_exec_report)]
+            )
+            self.assertEqual(0, replay_exec_exit)
+            replay_exec_payload = json.loads(replay_exec_report.read_text("utf-8"))
+            self.assertTrue(replay_exec_payload["execution_replay_passed"])
 
             export_exit = main(
                 ["export-otel", "--run", str(run_dir), "--out", str(otel_file)]

@@ -35,7 +35,7 @@ Ship agents with evidence, not guesswork:
 - `baseline`: reference run used for regression comparison.
 - `gate`: policy that converts eval deltas into CI pass/fail behavior.
 
-## Trace Schema v0 (Opinionated)
+## Trace Schema v1.0 (Opinionated)
 
 Minimum required entities:
 
@@ -174,6 +174,15 @@ agent-eval replay --run runs/candidate --out runs/candidate/compare/replay_repor
 
 `agent-eval replay` returns exit code `0` on full replay match and `1` otherwise.
 
+For propose/execute/repair runs, execution replay re-runs adapter commands and checks
+trajectory/verdict parity:
+
+```bash
+agent-eval replay-exec --run runs/loop --out runs/loop/compare/replay_exec_report.json
+```
+
+`agent-eval replay-exec` returns exit code `0` only when execution replay fully matches.
+
 ## Trace Import Adapters
 
 Use `import-trace` to normalize external exports into this repo's trace schema:
@@ -195,6 +204,12 @@ Use `--strict` to fail on unknown top-level provider fields or empty parsed trac
 
 Adapter conformance tests are included under `tests/fixtures/adapters/` and `tests/test_adapter_conformance.py`.
 
+Run strict conformance checks:
+
+```bash
+agent-eval adapter-conformance --fixtures-dir tests/fixtures/adapters --min-fixtures-per-provider 2
+```
+
 ## OpenTelemetry Export
 
 Export any run to OpenTelemetry-style GenAI JSONL:
@@ -209,4 +224,50 @@ Runtime failures return machine-readable JSON on stderr:
 
 ```json
 {"error":{"code":"validation_error","message":"...","details":{...}}}
+```
+
+## Schema Governance + Contracts
+
+Validate suites:
+
+```bash
+agent-eval schema validate --input suites/starter_suite.json --strict --require-version 1.0.0
+```
+
+Migrate legacy suites:
+
+```bash
+agent-eval schema migrate --input legacy_suite.json --output suites/migrated_suite.json
+```
+
+Run combined schema back-compat + adapter checks:
+
+```bash
+agent-eval contracts-check \
+  --schema-fixtures-dir tests/fixtures/schema_backcompat \
+  --adapter-fixtures-dir tests/fixtures/adapters \
+  --min-fixtures-per-provider 2
+```
+
+## Markdown Reports
+
+Generate a human-readable report from compare/gate/replay artifacts:
+
+```bash
+agent-eval report markdown \
+  --compare runs/candidate/compare/baseline_delta.json \
+  --gate runs/candidate/compare/gate_decision.json \
+  --replay runs/candidate/compare/replay_report.json \
+  --out runs/candidate/compare/report.md \
+  --title "Release Eval Report"
+```
+
+## Local Release + Packaging
+
+No hosted CI integration is required for packaging:
+
+```bash
+./scripts/check_contracts.sh
+./scripts/release_local.sh
+docker build -t agent-eval-suite:0.1.1 .
 ```

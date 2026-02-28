@@ -1,0 +1,31 @@
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "run health check"
+    },
+    {
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "name": "health_check",
+          "arguments": {
+            "service": "db"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "name": "health_check",
+      "content": "{\"ok\":true}"
+    },
+    {
+      "role": "assistant",
+      "content": "healthy"
+    }
+  ],
+  "azureml": {
+    "workspace": "local"
+  }
+}

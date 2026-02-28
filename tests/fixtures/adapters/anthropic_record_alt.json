@@ -1,0 +1,39 @@
+{
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "search release notes"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "name": "search_docs",
+          "input": {
+            "q": "release notes"
+          }
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_result",
+          "name": "search_docs",
+          "content": "v0.1.0 notes"
+        },
+        {
+          "type": "text",
+          "text": "Found it"
+        }
+      ]
+    }
+  ]
+}

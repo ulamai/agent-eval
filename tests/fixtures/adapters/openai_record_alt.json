@@ -1,0 +1,28 @@
+{
+  "response": {
+    "output": [
+      {
+        "type": "message",
+        "role": "user",
+        "content": "check stock price"
+      },
+      {
+        "type": "function_call",
+        "name": "quote_stock",
+        "arguments": "{\"ticker\":\"AAPL\"}"
+      },
+      {
+        "type": "tool_result",
+        "name": "quote_stock",
+        "output": {
+          "price": 196.5
+        }
+      },
+      {
+        "type": "message",
+        "role": "assistant",
+        "content": "AAPL is 196.5"
+      }
+    ]
+  }
+}

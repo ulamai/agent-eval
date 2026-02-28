@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-eval-suite"
-version = "0.1.0"
+version = "0.1.1"
 description = "Opinionated offline evaluation and CI gating for agent runs."
 readme = "readme.md"
 requires-python = ">=3.10"

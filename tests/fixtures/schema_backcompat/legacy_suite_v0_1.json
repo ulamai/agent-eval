@@ -1,0 +1,36 @@
+{
+  "dataset_id": "legacy-suite",
+  "cases": [
+    {
+      "case_id": "legacy-1",
+      "input": "weather in sf",
+      "expected": "72F",
+      "regex": ["72F"],
+      "tool_contracts": {
+        "search_weather": {
+          "required": ["city"],
+          "forbidden": ["api_key"]
+        }
+      },
+      "trace": [
+        {
+          "idx": 0,
+          "ts": "2026-02-28T10:00:00+00:00",
+          "actor": "user",
+          "type": "message",
+          "input": "weather in sf"
+        },
+        {
+          "idx": 1,
+          "ts": "2026-02-28T10:00:01+00:00",
+          "actor": "assistant",
+          "type": "message",
+          "output": "72F"
+        }
+      ]
+    }
+  ],
+  "metadata": {
+    "schema_version": "0.1.0"
+  }
+}

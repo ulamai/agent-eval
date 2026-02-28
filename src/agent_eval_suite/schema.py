@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = "0.1.0"
+SCHEMA_VERSION = "1.0.0"
 
 
 def utc_now_iso() -> str:
@@ -207,6 +207,7 @@ class RunConfig:
     judges: list[str]
     judge_configs: dict[str, Any] = field(default_factory=dict)
     execution_mode: str = "trace_score"
+    execution_config: dict[str, Any] = field(default_factory=dict)
     pinned_env: dict[str, Any] = field(default_factory=dict)
     prompt_hash: str | None = None
     policy_hash: str | None = None
@@ -230,6 +231,7 @@ class RunConfig:
             judges=list(data.get("judges", [])),
             judge_configs=dict(data.get("judge_configs", {})),
             execution_mode=str(data.get("execution_mode", "trace_score")),
+            execution_config=dict(data.get("execution_config", {})),
             pinned_env=dict(data.get("pinned_env", {})),
             prompt_hash=data.get("prompt_hash"),
             policy_hash=data.get("policy_hash"),

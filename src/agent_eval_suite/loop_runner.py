@@ -10,6 +10,13 @@ from typing import Any
 from agent_eval_suite.runner import EvalRunner
 from agent_eval_suite.schema import EvalCase, EvalSuite, TraceEvent
 
+LOOP_RUNTIME_METADATA_KEYS = {
+    "attempt_history",
+    "selected_attempt",
+    "max_repairs",
+    "loop_passed",
+}
+
 
 def _to_jsonable(value: Any) -> Any:
     if isinstance(value, (dict, list, str, int, float, bool)) or value is None:
@@ -22,6 +29,14 @@ def _parse_command(command: str) -> list[str]:
     if not parts:
         raise ValueError("command is empty")
     return parts
+
+
+def _base_case_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    # Strip runtime loop fields so replayed execution starts from the same base state.
+    sanitized = dict(metadata)
+    for key in LOOP_RUNTIME_METADATA_KEYS:
+        sanitized.pop(key, None)
+    return sanitized
 
 
 def _run_agent_command(command: list[str], payload: dict[str, Any], timeout_seconds: int) -> dict[str, Any]:
@@ -170,6 +185,7 @@ class ProposeExecuteRepairRunner:
     def _run_case_attempt(
         self,
         case: EvalCase,
+        base_metadata: dict[str, Any],
         attempt: int,
         previous_attempts: list[dict[str, Any]],
     ) -> tuple[EvalCase, dict[str, Any]]:
@@ -190,7 +206,7 @@ class ProposeExecuteRepairRunner:
                 name: spec.to_dict() for name, spec in case.tool_contracts.items()
             },
             "policy": case.policy.to_dict(),
-            "metadata": case.metadata,
+            "metadata": base_metadata,
         }
 
         response = _run_agent_command(command, payload, self.timeout_seconds)
@@ -211,19 +227,22 @@ class ProposeExecuteRepairRunner:
             policy=case.policy,
             regex_patterns=case.regex_patterns,
             json_schema=case.json_schema,
-            metadata=case.metadata,
+            metadata=base_metadata,
         )
         return attempt_case, response
 
     def run(self, suite: EvalSuite) -> EvalSuite:
         output_cases: list[EvalCase] = []
         for case in suite.cases:
+            base_metadata = _base_case_metadata(case.metadata)
             history: list[dict[str, Any]] = []
             selected_case: EvalCase | None = None
             selected_result = None
 
             for attempt in range(self.max_repairs + 1):
-                attempt_case, raw_response = self._run_case_attempt(case, attempt, history)
+                attempt_case, raw_response = self._run_case_attempt(
+                    case, base_metadata, attempt, history
+                )
                 case_result = self.eval_runner.evaluate_case(attempt_case)
 
                 history.append(
@@ -247,7 +266,7 @@ class ProposeExecuteRepairRunner:
                 selected_case = case
                 selected_result = self.eval_runner.evaluate_case(case)
 
-            selected_case.metadata = dict(selected_case.metadata)
+            selected_case.metadata = dict(base_metadata)
             selected_case.metadata["attempt_history"] = history
             selected_case.metadata["selected_attempt"] = history[-1]["attempt"] if history else 0
             selected_case.metadata["max_repairs"] = self.max_repairs

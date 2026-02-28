@@ -1,0 +1,42 @@
+{
+  "predictions": [
+    {
+      "content": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "summarize metrics"
+          }
+        ]
+      },
+      "candidates": [
+        {
+          "content": {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "get_metrics",
+                  "args": {
+                    "window": "7d"
+                  }
+                }
+              },
+              {
+                "functionResponse": {
+                  "name": "get_metrics",
+                  "response": {
+                    "pass_rate": 0.97
+                  }
+                }
+              },
+              {
+                "text": "pass rate is 97%"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

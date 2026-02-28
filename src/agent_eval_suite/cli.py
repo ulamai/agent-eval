@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Any
 
 from agent_eval_suite.artifacts import write_evidence_pack, write_json
+from agent_eval_suite.adapter_conformance import run_adapter_conformance
 from agent_eval_suite.compare import compare_runs, write_compare_report
+from agent_eval_suite.contracts import run_contract_checks
 from agent_eval_suite.environment import capture_environment_metadata
 from agent_eval_suite.gate import GateThresholds, evaluate_gate, write_gate_decision
 from agent_eval_suite.importers import PROVIDERS, import_to_suite
@@ -24,9 +26,15 @@ from agent_eval_suite.registry import (
     resolve_baseline_reference,
     set_baseline,
 )
-from agent_eval_suite.replay_engine import replay_run
+from agent_eval_suite.replay_engine import replay_execute_run, replay_run
+from agent_eval_suite.reporting import generate_markdown_report
 from agent_eval_suite.runner import EvalRunner
 from agent_eval_suite.scaffold import scaffold_init
+from agent_eval_suite.schema_governance import (
+    LATEST_SCHEMA_VERSION,
+    migrate_suite_file,
+    validate_suite_file,
+)
 from agent_eval_suite.schema import EvalSuite, RunConfig, utc_now_iso
 
 
@@ -130,6 +138,12 @@ def cmd_run_loop(args: argparse.Namespace) -> int:
         judge_configs=all_configs,
         execution_mode="propose_execute_repair",
     )
+    run_config.execution_config = {
+        "propose_command": args.propose_command,
+        "repair_command": args.repair_command,
+        "max_repairs": args.max_repairs,
+        "command_timeout_seconds": args.command_timeout_seconds,
+    }
     case_results, summary = eval_runner.run(generated_suite, run_config)
     write_evidence_pack(args.out, generated_suite, run_config, summary, case_results)
 
@@ -315,10 +329,72 @@ def cmd_replay(args: argparse.Namespace) -> int:
     return 0 if report["replay_passed"] else 1
 
 
+def cmd_replay_exec(args: argparse.Namespace) -> int:
+    report = replay_execute_run(args.run, args.out)
+    print(json.dumps(report))
+    return 0 if report["execution_replay_passed"] else 1
+
+
 def cmd_export_otel(args: argparse.Namespace) -> int:
     out = export_run_to_otel(args.run, args.out)
     print(json.dumps({"out": str(out)}))
     return 0
+
+
+def cmd_report_markdown(args: argparse.Namespace) -> int:
+    out = generate_markdown_report(
+        compare_path=args.compare,
+        gate_path=args.gate,
+        replay_path=args.replay,
+        out_path=args.out,
+        title=args.title,
+    )
+    print(json.dumps({"out": str(out)}))
+    return 0
+
+
+def cmd_schema_validate(args: argparse.Namespace) -> int:
+    report = validate_suite_file(
+        args.input,
+        strict=args.strict,
+        require_version=args.require_version,
+    )
+    print(json.dumps(report))
+    return 0 if report["passed"] else 1
+
+
+def cmd_schema_migrate(args: argparse.Namespace) -> int:
+    report = migrate_suite_file(
+        args.input,
+        args.output,
+        target_version=args.target_version,
+    )
+    print(json.dumps(report))
+    return 0 if report["validation"]["passed"] else 1
+
+
+def cmd_adapter_conformance(args: argparse.Namespace) -> int:
+    report = run_adapter_conformance(
+        fixtures_dir=args.fixtures_dir,
+        min_fixtures_per_provider=args.min_fixtures_per_provider,
+        strict_import=args.strict_import,
+    )
+    if args.out:
+        write_json(args.out, report)
+    print(json.dumps(report))
+    return 0 if report["passed"] else 1
+
+
+def cmd_contracts_check(args: argparse.Namespace) -> int:
+    report = run_contract_checks(
+        schema_fixtures_dir=args.schema_fixtures_dir,
+        adapter_fixtures_dir=args.adapter_fixtures_dir,
+        min_fixtures_per_provider=args.min_fixtures_per_provider,
+    )
+    if args.out:
+        write_json(args.out, report)
+    print(json.dumps(report))
+    return 0 if report["passed"] else 1
 
 
 def _add_run_identity_args(parser: argparse.ArgumentParser) -> None:
@@ -485,6 +561,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     replay_parser.set_defaults(func=cmd_replay)
 
+    replay_exec_parser = subparsers.add_parser(
+        "replay-exec",
+        help="Re-run propose/execute/repair commands and compare trajectory + verdict parity",
+    )
+    replay_exec_parser.add_argument(
+        "--run", required=True, help="Path to run-loop evidence pack directory"
+    )
+    replay_exec_parser.add_argument(
+        "--out",
+        default=None,
+        help="Optional output path for replay-exec report JSON",
+    )
+    replay_exec_parser.set_defaults(func=cmd_replay_exec)
+
     otel_parser = subparsers.add_parser(
         "export-otel",
         help="Export run events to OpenTelemetry-style GenAI JSONL",
@@ -494,6 +584,114 @@ def build_parser() -> argparse.ArgumentParser:
     )
     otel_parser.add_argument("--out", required=True, help="Output JSONL path")
     otel_parser.set_defaults(func=cmd_export_otel)
+
+    report_parser = subparsers.add_parser(
+        "report", help="Generate human-readable reports from eval artifacts"
+    )
+    report_subparsers = report_parser.add_subparsers(
+        dest="report_command", required=True
+    )
+    report_md_parser = report_subparsers.add_parser(
+        "markdown", help="Generate markdown report from compare/gate/replay outputs"
+    )
+    report_md_parser.add_argument("--compare", required=True, help="Compare report JSON path")
+    report_md_parser.add_argument("--gate", default=None, help="Optional gate report JSON path")
+    report_md_parser.add_argument(
+        "--replay", default=None, help="Optional replay report JSON path"
+    )
+    report_md_parser.add_argument("--out", required=True, help="Output markdown file path")
+    report_md_parser.add_argument(
+        "--title", default="Agent Eval Report", help="Markdown report title"
+    )
+    report_md_parser.set_defaults(func=cmd_report_markdown)
+
+    schema_parser = subparsers.add_parser("schema", help="Schema governance commands")
+    schema_subparsers = schema_parser.add_subparsers(
+        dest="schema_command", required=True
+    )
+
+    schema_validate_parser = schema_subparsers.add_parser(
+        "validate", help="Validate suite JSON against schema contract"
+    )
+    schema_validate_parser.add_argument("--input", required=True, help="Suite JSON file")
+    schema_validate_parser.add_argument(
+        "--strict", action="store_true", help="Fail on unknown fields"
+    )
+    schema_validate_parser.add_argument(
+        "--require-version",
+        default=None,
+        help="Require metadata.schema_version to match this value",
+    )
+    schema_validate_parser.set_defaults(func=cmd_schema_validate)
+
+    schema_migrate_parser = schema_subparsers.add_parser(
+        "migrate", help="Migrate suite JSON to latest schema contract"
+    )
+    schema_migrate_parser.add_argument("--input", required=True, help="Input suite JSON file")
+    schema_migrate_parser.add_argument("--output", required=True, help="Output suite JSON file")
+    schema_migrate_parser.add_argument(
+        "--target-version",
+        default=LATEST_SCHEMA_VERSION,
+        help=f"Target schema version (default: {LATEST_SCHEMA_VERSION})",
+    )
+    schema_migrate_parser.set_defaults(func=cmd_schema_migrate)
+
+    adapter_conformance_parser = subparsers.add_parser(
+        "adapter-conformance",
+        help="Run strict adapter conformance checks on fixture corpus",
+    )
+    adapter_conformance_parser.add_argument(
+        "--fixtures-dir",
+        default="tests/fixtures/adapters",
+        help="Directory with provider fixture JSON files",
+    )
+    adapter_conformance_parser.add_argument(
+        "--min-fixtures-per-provider",
+        type=int,
+        default=2,
+        help="Minimum fixtures required for each provider",
+    )
+    adapter_conformance_parser.add_argument(
+        "--strict-import",
+        action="store_true",
+        default=True,
+        help="Use strict importer mode during conformance checks",
+    )
+    adapter_conformance_parser.add_argument(
+        "--no-strict-import",
+        dest="strict_import",
+        action="store_false",
+        help="Disable strict importer mode during conformance checks",
+    )
+    adapter_conformance_parser.add_argument(
+        "--out", default=None, help="Optional JSON output path for conformance report"
+    )
+    adapter_conformance_parser.set_defaults(func=cmd_adapter_conformance)
+
+    contracts_check_parser = subparsers.add_parser(
+        "contracts-check",
+        help="Run schema back-compat and adapter conformance checks for CI",
+    )
+    contracts_check_parser.add_argument(
+        "--schema-fixtures-dir",
+        default="tests/fixtures/schema_backcompat",
+        help="Schema fixture directory for migration/validation checks",
+    )
+    contracts_check_parser.add_argument(
+        "--adapter-fixtures-dir",
+        default="tests/fixtures/adapters",
+        help="Adapter fixture directory",
+    )
+    contracts_check_parser.add_argument(
+        "--min-fixtures-per-provider",
+        type=int,
+        default=2,
+        help="Minimum fixtures required for each provider",
+    )
+    contracts_check_parser.add_argument(
+        "--out", default=None, help="Optional JSON output path for contracts report"
+    )
+    contracts_check_parser.set_defaults(func=cmd_contracts_check)
 
     registry_parser = subparsers.add_parser(
         "registry", help="Manage local dataset and baseline registry"
