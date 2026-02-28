@@ -1,0 +1,36 @@
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "weather in sf"
+        }
+      ]
+    },
+    {
+      "role": "model",
+      "parts": [
+        {
+          "functionCall": {
+            "name": "search_weather",
+            "args": {
+              "city": "San Francisco"
+            }
+          }
+        },
+        {
+          "functionResponse": {
+            "name": "search_weather",
+            "response": {
+              "temp_f": 72
+            }
+          }
+        },
+        {
+          "text": "It is 72F"
+        }
+      ]
+    }
+  ]
+}

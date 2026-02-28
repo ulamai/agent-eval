@@ -1,0 +1,30 @@
+{
+  "steps": [
+    {
+      "role": "user",
+      "type": "message",
+      "input": "ping"
+    },
+    {
+      "role": "assistant",
+      "type": "tool_call",
+      "tool": "health_check",
+      "input": {
+        "service": "api"
+      }
+    },
+    {
+      "role": "tool",
+      "type": "tool_result",
+      "tool": "health_check",
+      "output": {
+        "ok": true
+      }
+    },
+    {
+      "role": "assistant",
+      "type": "message",
+      "output": "pong"
+    }
+  ]
+}

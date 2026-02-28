@@ -94,6 +94,53 @@ def _index_judge_scores(case_result: dict[str, Any]) -> dict[str, float]:
     return scores
 
 
+def _failure_clusters(case_results: dict[str, dict[str, Any]]) -> dict[str, int]:
+    clusters: dict[str, int] = {}
+    for case in case_results.values():
+        judge_results = case.get("judge_results", [])
+        if not isinstance(judge_results, list):
+            continue
+        for row in judge_results:
+            if not isinstance(row, dict):
+                continue
+            if row.get("skipped"):
+                continue
+            if bool(row.get("passed")):
+                continue
+            judge_id = str(row.get("judge_id", "unknown"))
+            reason = str(row.get("reason", "failed"))
+            cluster_key = f"{judge_id}:{reason}"
+            clusters[cluster_key] = clusters.get(cluster_key, 0) + 1
+    return clusters
+
+
+def _failure_cluster_deltas(
+    baseline_clusters: dict[str, int], candidate_clusters: dict[str, int]
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for cluster in sorted(set(baseline_clusters) | set(candidate_clusters)):
+        base = int(baseline_clusters.get(cluster, 0))
+        cand = int(candidate_clusters.get(cluster, 0))
+        rows.append(
+            {
+                "cluster": cluster,
+                "baseline_count": base,
+                "candidate_count": cand,
+                "delta": cand - base,
+            }
+        )
+    rows.sort(key=lambda row: row["delta"], reverse=True)
+    return rows
+
+
+def _risk_level(pass_rate_delta: float, hard_fail_delta: float, regressed_cases: int) -> str:
+    if hard_fail_delta > 0.1 or regressed_cases >= 10:
+        return "high"
+    if pass_rate_delta < -0.03 or hard_fail_delta > 0.02 or regressed_cases > 0:
+        return "medium"
+    return "low"
+
+
 def _case_regressions(
     baseline_cases: dict[str, dict[str, Any]], candidate_cases: dict[str, dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -149,6 +196,9 @@ def compare_runs(baseline_path: str | Path, candidate_path: str | Path) -> dict[
     baseline_cases = _index_case_results(baseline_path)
     candidate_cases = _index_case_results(candidate_path)
     case_regressions = _case_regressions(baseline_cases, candidate_cases)
+    baseline_clusters = _failure_clusters(baseline_cases)
+    candidate_clusters = _failure_clusters(candidate_cases)
+    cluster_deltas = _failure_cluster_deltas(baseline_clusters, candidate_clusters)
 
     metrics = {
         "pass_rate": _metric_delta(
@@ -184,8 +234,35 @@ def compare_runs(baseline_path: str | Path, candidate_path: str | Path) -> dict[
             regressions.append(f"{judge_id} pass rate decreased")
 
     regressed_cases = [case["case_id"] for case in case_regressions if case["regressed"]]
+    improved_cases = [case["case_id"] for case in case_regressions if case["improved"]]
     for case_id in regressed_cases:
         regressions.append(f"case regressed: {case_id}")
+
+    new_hard_fail_cases = [
+        case["case_id"]
+        for case in case_regressions
+        if (case["baseline_hard_failed"] is False and case["candidate_hard_failed"] is True)
+    ]
+    resolved_hard_fail_cases = [
+        case["case_id"]
+        for case in case_regressions
+        if (case["baseline_hard_failed"] is True and case["candidate_hard_failed"] is False)
+    ]
+    top_regressed_judges = [
+        {
+            "judge_id": judge_id,
+            "delta": metric["delta"],
+            "baseline": metric["baseline"],
+            "candidate": metric["candidate"],
+        }
+        for judge_id, metric in judge_metrics.items()
+        if metric["delta"] < 0
+    ]
+    top_regressed_judges.sort(key=lambda row: row["delta"])
+
+    pass_rate_delta = float(metrics["pass_rate"]["delta"])
+    hard_fail_delta = float(metrics["hard_fail_rate"]["delta"])
+    risk_level = _risk_level(pass_rate_delta, hard_fail_delta, len(regressed_cases))
 
     return {
         "generated_at": datetime.now(UTC).isoformat(),
@@ -196,6 +273,23 @@ def compare_runs(baseline_path: str | Path, candidate_path: str | Path) -> dict[
         "judge_metrics": judge_metrics,
         "case_regressions": case_regressions,
         "regressions": regressions,
+        "overview": {
+            "total_baseline_cases": len(baseline_cases),
+            "total_candidate_cases": len(candidate_cases),
+            "regressed_cases": len(regressed_cases),
+            "improved_cases": len(improved_cases),
+            "new_hard_fail_cases": len(new_hard_fail_cases),
+            "resolved_hard_fail_cases": len(resolved_hard_fail_cases),
+            "risk_level": risk_level,
+        },
+        "top_regressed_judges": top_regressed_judges[:10],
+        "new_hard_fail_case_ids": new_hard_fail_cases,
+        "resolved_hard_fail_case_ids": resolved_hard_fail_cases,
+        "failure_clusters": {
+            "baseline": baseline_clusters,
+            "candidate": candidate_clusters,
+            "delta_ranked": cluster_deltas[:25],
+        },
     }
 
 

@@ -1,0 +1,43 @@
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "find policy"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "name": "search_docs",
+          "input": {
+            "q": "security policy"
+          }
+        },
+        {
+          "type": "text",
+          "text": "Looking up policy"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_result",
+          "name": "search_docs",
+          "content": "Policy v3"
+        },
+        {
+          "type": "text",
+          "text": "Done"
+        }
+      ]
+    }
+  ]
+}

@@ -15,6 +15,15 @@ from agent_eval_suite.importers import PROVIDERS, import_to_suite
 from agent_eval_suite.loop_runner import ProposeExecuteRepairRunner
 from agent_eval_suite.otel_export import export_run_to_otel
 from agent_eval_suite.plugins import DEFAULT_JUDGES, instantiate_judge
+from agent_eval_suite.registry import (
+    DEFAULT_REGISTRY_PATH,
+    get_baseline,
+    list_baselines,
+    list_datasets,
+    register_dataset,
+    resolve_baseline_reference,
+    set_baseline,
+)
 from agent_eval_suite.replay_engine import replay_run
 from agent_eval_suite.runner import EvalRunner
 from agent_eval_suite.scaffold import scaffold_init
@@ -133,7 +142,15 @@ def cmd_run_loop(args: argparse.Namespace) -> int:
 
 
 def cmd_compare(args: argparse.Namespace) -> int:
-    report = compare_runs(args.baseline, args.candidate)
+    baseline_path, baseline_entry = resolve_baseline_reference(
+        args.baseline, path=args.registry_path
+    )
+    report = compare_runs(baseline_path, args.candidate)
+    report["baseline_reference"] = {
+        "input": args.baseline,
+        "resolved_path": baseline_path,
+        "registry_entry": baseline_entry,
+    }
     if args.out:
         out_path = Path(args.out)
     else:
@@ -145,6 +162,59 @@ def cmd_compare(args: argparse.Namespace) -> int:
         )
     write_compare_report(report, out_path)
     print(json.dumps({"compare_report": str(out_path), "regressions": report["regressions"]}))
+    return 0
+
+
+def cmd_registry_dataset_add(args: argparse.Namespace) -> int:
+    tags = args.tag or []
+    entry = register_dataset(
+        suite_path=args.suite,
+        dataset_id=args.dataset_id,
+        description=args.description,
+        tags=tags,
+        path=args.registry_path,
+    )
+    print(json.dumps({"dataset_registered": entry, "registry_path": args.registry_path}))
+    return 0
+
+
+def cmd_registry_dataset_list(args: argparse.Namespace) -> int:
+    rows = list_datasets(path=args.registry_path)
+    print(json.dumps({"datasets": rows, "count": len(rows), "registry_path": args.registry_path}))
+    return 0
+
+
+def cmd_registry_baseline_set(args: argparse.Namespace) -> int:
+    entry = set_baseline(
+        name=args.name,
+        run_path=args.run,
+        dataset_id=args.dataset_id,
+        notes=args.notes,
+        path=args.registry_path,
+    )
+    print(json.dumps({"baseline_set": entry, "registry_path": args.registry_path}))
+    return 0
+
+
+def cmd_registry_baseline_list(args: argparse.Namespace) -> int:
+    rows = list_baselines(path=args.registry_path)
+    print(json.dumps({"baselines": rows, "count": len(rows), "registry_path": args.registry_path}))
+    return 0
+
+
+def cmd_registry_baseline_show(args: argparse.Namespace) -> int:
+    entry = get_baseline(args.name, path=args.registry_path)
+    if entry is None:
+        print(
+            json.dumps(
+                {
+                    "error": f"baseline '{args.name}' not found",
+                    "registry_path": args.registry_path,
+                }
+            )
+        )
+        return 1
+    print(json.dumps({"baseline": entry, "registry_path": args.registry_path}))
     return 0
 
 
@@ -306,6 +376,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--candidate", required=True, help="Candidate run directory"
     )
     compare_parser.add_argument(
+        "--registry-path",
+        default=DEFAULT_REGISTRY_PATH,
+        help="Registry path used to resolve baseline names (default: .agent_eval/registry.json)",
+    )
+    compare_parser.add_argument(
         "--out", default=None, help="Output path for compare report JSON"
     )
     compare_parser.set_defaults(func=cmd_compare)
@@ -387,6 +462,72 @@ def build_parser() -> argparse.ArgumentParser:
     )
     otel_parser.add_argument("--out", required=True, help="Output JSONL path")
     otel_parser.set_defaults(func=cmd_export_otel)
+
+    registry_parser = subparsers.add_parser(
+        "registry", help="Manage local dataset and baseline registry"
+    )
+    registry_subparsers = registry_parser.add_subparsers(
+        dest="registry_command", required=True
+    )
+
+    dataset_add_parser = registry_subparsers.add_parser(
+        "dataset-add", help="Register a dataset suite in the local registry"
+    )
+    dataset_add_parser.add_argument("--suite", required=True, help="Suite JSON file path")
+    dataset_add_parser.add_argument("--dataset-id", default=None)
+    dataset_add_parser.add_argument("--description", default=None)
+    dataset_add_parser.add_argument("--tag", action="append", default=[])
+    dataset_add_parser.add_argument(
+        "--registry-path",
+        default=DEFAULT_REGISTRY_PATH,
+        help="Registry path (default: .agent_eval/registry.json)",
+    )
+    dataset_add_parser.set_defaults(func=cmd_registry_dataset_add)
+
+    dataset_list_parser = registry_subparsers.add_parser(
+        "dataset-list", help="List registered datasets"
+    )
+    dataset_list_parser.add_argument(
+        "--registry-path",
+        default=DEFAULT_REGISTRY_PATH,
+        help="Registry path (default: .agent_eval/registry.json)",
+    )
+    dataset_list_parser.set_defaults(func=cmd_registry_dataset_list)
+
+    baseline_set_parser = registry_subparsers.add_parser(
+        "baseline-set", help="Set or update a named baseline reference"
+    )
+    baseline_set_parser.add_argument("--name", required=True)
+    baseline_set_parser.add_argument("--run", required=True, help="Evidence pack run directory")
+    baseline_set_parser.add_argument("--dataset-id", default=None)
+    baseline_set_parser.add_argument("--notes", default=None)
+    baseline_set_parser.add_argument(
+        "--registry-path",
+        default=DEFAULT_REGISTRY_PATH,
+        help="Registry path (default: .agent_eval/registry.json)",
+    )
+    baseline_set_parser.set_defaults(func=cmd_registry_baseline_set)
+
+    baseline_list_parser = registry_subparsers.add_parser(
+        "baseline-list", help="List named baselines"
+    )
+    baseline_list_parser.add_argument(
+        "--registry-path",
+        default=DEFAULT_REGISTRY_PATH,
+        help="Registry path (default: .agent_eval/registry.json)",
+    )
+    baseline_list_parser.set_defaults(func=cmd_registry_baseline_list)
+
+    baseline_show_parser = registry_subparsers.add_parser(
+        "baseline-show", help="Show one named baseline"
+    )
+    baseline_show_parser.add_argument("--name", required=True)
+    baseline_show_parser.add_argument(
+        "--registry-path",
+        default=DEFAULT_REGISTRY_PATH,
+        help="Registry path (default: .agent_eval/registry.json)",
+    )
+    baseline_show_parser.set_defaults(func=cmd_registry_baseline_show)
 
     return parser
 

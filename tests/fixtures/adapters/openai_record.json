@@ -1,0 +1,29 @@
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "weather in sf"
+    },
+    {
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "type": "function",
+          "function": {
+            "name": "search_weather",
+            "arguments": "{\"city\":\"San Francisco\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "name": "search_weather",
+      "content": "{\"temp_f\":72}"
+    },
+    {
+      "role": "assistant",
+      "content": "It is 72F"
+    }
+  ]
+}

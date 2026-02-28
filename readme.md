@@ -122,6 +122,19 @@ agent-eval gate --compare runs/candidate/compare/baseline_delta.json --min-pass-
 CI usage: `agent-eval gate` returns exit code `0` on pass and `1` on gate failure.
 
 `agent-eval compare` includes aggregate deltas and per-case regression details (`case_regressions`) when run artifacts are available.
+It also emits richer report sections: `overview`, `top_regressed_judges`, and ranked `failure_clusters`.
+
+## Dataset + Baseline Registry
+
+Use the local registry to track datasets and named baselines:
+
+```bash
+agent-eval registry dataset-add --suite suites/starter_suite.json --dataset-id starter-suite
+agent-eval registry baseline-set --name main --run runs/baseline
+agent-eval compare --baseline main --candidate runs/candidate
+```
+
+Registry default path: `.agent_eval/registry.json` (override with `--registry-path`).
 
 ## Propose/Execute/Repair Loop
 
@@ -177,6 +190,8 @@ Supported providers:
 - `foundry`
 
 Imported events are enriched with OTel-style trace/span identifiers and GenAI attributes.
+
+Adapter conformance tests are included under `tests/fixtures/adapters/` and `tests/test_adapter_conformance.py`.
 
 ## OpenTelemetry Export
 
