@@ -1,8 +1,8 @@
 # Agent Eval Suite
 
-Agent Eval Suite is an opinionated open-source evaluation layer for agent runs.
+Agent Eval Suite is an opinionated open-source evaluation layer for agent runs, built for teams that need release-quality evidence instead of one-off spot checks. It focuses on deterministic scoring, trajectory-aware analysis, and CI-friendly pass/fail outcomes so model, prompt, and toolchain changes can be evaluated with the same rigor as software changes.
 
-It generalizes the `bench + replay` workflow from `ulamai/ulamai` and pairs it with local, audit-friendly evidence exports inspired by FormalCloud-style evidence bundles.
+The project generalizes the `bench + replay` pattern into a reusable product surface: ingest traces from common agent stacks, score them with deterministic judges, compare against baselines, and gate releases automatically. It also ships a local-first evidence pack format that preserves run config, case verdicts, and replay artifacts so every decision is auditable and reproducible.
 
 ## Product Wedge
 
@@ -13,7 +13,7 @@ Ship agents with evidence, not guesswork:
 - Baseline-vs-candidate comparison with CI gate exit codes.
 - Local artifact outputs that make regressions explainable.
 
-## Open-Source Scope (This Repo)
+## Open-Source Scope
 
 1. Trace schema + replay contract for agent runs.
 2. Offline eval runner + baseline compare + CI gate exit codes.
@@ -26,14 +26,6 @@ Ship agents with evidence, not guesswork:
 6. Local artifact outputs:
    - machine-readable JSON report
    - evidence pack folder structure
-
-## Private/Paid Scope (Not Open-Sourced Here)
-
-1. Private benchmark packs and holdouts.
-2. Customer-specific policy packs.
-3. Hosted eval storage, dashboards, and enterprise controls (RBAC/SSO).
-
-This boundary is deliberate: OSS drives adoption and integrations; paid offerings deliver enterprise governance and differentiated eval packs.
 
 ## Core Concepts
 
